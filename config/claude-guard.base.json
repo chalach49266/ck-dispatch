@@ -1,5 +1,5 @@
 {
-  "_note": "Base for the per-run Claude settings file (passed with --settings). ck-run adds Edit/Write denies for both workspace roots, every raw folder (also its real path when it is a symlink), ck-dispatch and agent_runs. Deny rules win over allow rules.",
+  "_note": "Base for the per-run Claude settings file (passed with --settings). ck-run adds Edit/Write denies for both workspace roots, every raw folder (also its real path when it is a symlink), ck-dispatch and agent_runs. Deny rules win over allow rules. Step 3 (2026-11-02, claude 2.1.316): a bare '**/x' pattern is relative to the cwd only, so file-name patterns must start with '//**/' to cover every folder; --strict-mcp-config does not drop plugin MCP servers, so mcp__skins is denied here, with the tools that send, publish, schedule or message other sessions.",
   "permissions": {
     "deny": [
       "Read(~/.ssh/**)",
@@ -15,10 +15,10 @@
       "Read(~/Library/Keychains/**)",
       "Read(~/.zsh_history)",
       "Read(~/.bash_history)",
-      "Read(**/.env)",
-      "Read(**/.env.*)",
-      "Read(**/*auth*.json)",
-      "Read(**/*credential*)",
+      "Read(//**/.env)",
+      "Read(//**/.env.*)",
+      "Read(//**/*auth*.json)",
+      "Read(//**/*credential*)",
       "Bash(security:*)",
       "Bash(env)",
       "Bash(env:*)",
@@ -47,7 +47,18 @@
       "Bash(conda create:*)",
       "Bash(conda install:*)",
       "WebFetch",
-      "WebSearch"
+      "WebSearch",
+      "mcp__skins",
+      "PublishPlugin",
+      "ShareOnboardingGuide",
+      "SendToProject",
+      "SendToProjectContext",
+      "SendMessage",
+      "PushNotification",
+      "DesignSync",
+      "CronCreate",
+      "ScheduleWakeup",
+      "Workflow"
     ]
   }
 }

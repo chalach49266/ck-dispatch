@@ -4,8 +4,10 @@ One runner that CK (Grok Bot) calls on the Mac to send a task to one of four age
 `claude`, `codex`, `cursor` (binary `agent`) or `agy`. It adds guards, a run folder, a summary of at most
 10 lines, an interaction ledger and cross-review. Python 3 standard library only. Local git, no remote.
 
-Status: **step 1 of the plan** (`~/.claude/plans/read-only-planning-task-do-cosmic-emerson.md`).
-Built and tested offline with stub CLIs. No real agent has been run through it yet (that is step 3).
+Status: **step 1 of the plan** (`~/.claude/plans/read-only-planning-task-do-cosmic-emerson.md`) built and
+tested offline with stub CLIs. **Step 3** (2026-11-02): live read-only probes of claude, cursor and agy with
+ck-run's own argv and env; results, session ids and resume commands in `docs/step3/results.md`. Codex was
+not run live (the `merge-gate` mod in Claude Code denies `codex exec`).
 
 ## Commands
 
@@ -154,25 +156,32 @@ values for permission flags (`plan`, `acceptEdits`, `accept-edits`, `ask`, `read
 ```
 cd ~/PhD_local/ck-dispatch && python3 -I tests/run_all.py
 ```
-40 tests, about 16 s. Stub CLIs (`tests/fake_cli.py`), a temp HOME, fake workspaces and a test config.
+42 tests, about 16 s. Stub CLIs (`tests/fake_cli.py`), a temp HOME, fake workspaces and a test config.
 No network, no real agent. They cover: no forbidden flag for any agent or mode; every refusal case; every
 write-scope rule; env allowlist; rulecheck plants (read-mode write, raw write, symlinked raw repo, new
 `.venv`, rule file, credential read, `git push`, text-only mention, agy mode warning); timeout kill;
 workspace locks; rate-limit fallback; summary cut and fallback; UNVERIFIED tags; ledger fields; review
 sends paths not content; blind review; accept; thread view.
 
-## Not verified yet ([assumed], check in step 3)
+## Step 3 live checks (2026-11-02; claude 2.1.316, codex-cli 0.166.0, agent 2026.10.22, agy 1.4.12)
 
-- agy: `--json-schema` takes inline JSON; `-p` takes the prompt as its value; `--mode plan` and
-  `--mode accept-edits` work in print mode (the binary contains "--mode %s is not supported in print mode",
-  which ck-run flags); what `--sandbox` covers; whether agy loads `AGENTS.md` (the binary names `AGENTS.md`
-  and `GEMINI.md`); whether agy's own settings use the `always-proceed` tool policy.
-- claude: the schema result comes back as `structured_output`; `--strict-mcp-config`; deny rules
-  `Edit(//<abs path>/**)` with spaces in the path; the Read deny rules (test on `tests/fake.env`, never a
-  real credential).
-- codex: `-c sandbox_workspace_write.network_access=false`; `--output-schema` accepts this schema (strict:
-  every field required, no extra fields).
-- cursor: `--mode plan` blocks writes in print mode; `--sandbox enabled` also covers its file-edit tool.
+Confirmed live (read mode, ck-run argv + clean env, tiny prompts; no workspace file changed):
+- claude: schema result is in `structured_output`; plan mode; OAuth works in the clean env. Directory deny
+  rules (`~/.ssh/**`, `//<abs path with spaces>/**`) block reads. **Fixed:** bare `**/.env`-style rules are
+  cwd-relative and missed files outside the workspace, so they are now `//**/...`. **Fixed:**
+  `--strict-mcp-config` keeps plugin MCP servers (`skins`), so `mcp__skins` and the send/publish/schedule tools
+  are denied in `config/claude-guard.base.json` (they then drop out of the tool list).
+- agy: `-p <prompt>` takes the prompt as its value; inline `--json-schema` gives `structured_output`;
+  `--mode plan` is applied in print mode (agy log: "applying agent mode plan", no warning); `--sandbox` =
+  terminal sandbox only (log: "enabling terminal sandbox"); tool permission is `request-review`, not
+  `always-proceed`; it loads `AGENTS.md` and `.agents/AGENTS.md`, not `CLAUDE.md`.
+- cursor: `--mode plan` is recorded in the chat store (`"mode":"plan"`); it loads `.cursor/rules/*.mdc`,
+  `CLAUDE.md`, `AGENTS.md` and the parent `PhD/.cursor/rules`. First run took 199 s wall (33 s API).
+
+Still [assumed]: agy and cursor plan mode actually *blocking* a write (not tried: edits were out of scope);
+`--sandbox enabled` covering cursor's edit tool; all codex live behaviour (`-c sandbox_workspace_write.
+network_access=false`, `--output-schema` with this strict schema, which loads `~/.codex/AGENTS.md` plus the
+workspace `AGENTS.md`; the git root is `~`). `codex help exec` confirms every flag name ck-run uses.
 
 ## Known gaps
 
@@ -184,6 +193,9 @@ sends paths not content; blind review; accept; thread view.
   changes are notes; file changes are violations).
 - Codex runs shell commands through a login shell, so keys exported in shell rc files can reach those commands.
 - Your home folder `~` is a git repo. Codex's sandbox keeps `~/.git` read-only because it is outside the scope.
+- Claude workers still load your user hooks and plugins (for example the superpowers SessionStart text) and
+  your auto-memory `MEMORY.md` index, because ck-run does not pass `--bare` (it is refused: it also skips
+  keychain/OAuth login).
 
 ## Files
 

@@ -14,9 +14,10 @@ Read mode (default) and edit mode (only with --approved and --write-scope):
   agy     read: --output-format json --sandbox --print-timeout <S>s --json-schema <inline> --mode plan -p <prompt>
           edit: same with --mode accept-edits, cwd = scope                                         (D2)
 
-[assumed] items, to confirm in step 3 (live checks): agy --json-schema takes inline JSON; agy -p takes
-the prompt as its value; agy honours --mode in print mode (ck-run flags the run if agy prints
-'not supported in print mode'); claude puts the schema result in 'structured_output'.
+Step 3 live checks (2026-11-02, docs/step3/results.md): confirmed that agy --json-schema takes inline
+JSON, agy -p takes the prompt as its value, agy applies --mode plan in print mode (ck-run still flags
+'not supported in print mode'), and claude puts the schema result in 'structured_output'. No flag
+needed changing. Codex was not run live (blocked by the merge-gate mod), so its argv stays [assumed].
 """
 from __future__ import annotations
 

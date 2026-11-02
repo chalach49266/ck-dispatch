@@ -187,6 +187,38 @@ class TestParsers(unittest.TestCase):
         self.assertLessEqual(len(lines), 10)
 
 
+class TestStep3Live(unittest.TestCase):
+    """Facts confirmed by the step-3 live probes (2026-11-02); see docs/step3/results.md."""
+
+    def test_claude_path_rules_are_anchored(self):
+        # claude 2.1.316: a bare '**/x' rule is relative to the cwd, so it missed a .env outside the workspace.
+        from ckdispatch.config import CLAUDE_GUARD_BASE
+        with open(CLAUDE_GUARD_BASE, encoding="utf-8") as f:
+            deny = json.load(f)["permissions"]["deny"]
+        for rule in deny:
+            if rule.startswith(("Read(", "Edit(", "Write(")):
+                path = rule[rule.index("(") + 1:-1]
+                self.assertTrue(path.startswith(("//", "~/")), f"unanchored path rule: {rule}")
+        for tool in ("mcp__skins", "PublishPlugin", "ShareOnboardingGuide", "SendToProject", "SendMessage",
+                     "PushNotification", "Workflow", "CronCreate"):
+            self.assertIn(tool, deny)
+
+    def test_parse_live_agy_and_cursor_shapes(self):
+        good = {"run_id": "r", "status": "ok", "summary": ["a"], "report_md": "x", "findings": [],
+                "files_read": [], "files_changed": [], "numbers": [], "proposed_changes": "",
+                "open_questions": [], "needs_approval": []}
+        agy = {"conversation_id": "c1", "duration_seconds": 1.0, "json_schema": {}, "num_turns": 1,
+               "response": json.dumps(good), "status": "SUCCESS", "structured_output": good, "usage": {}}
+        out = summarize.parse_single_json(json.dumps(agy))
+        self.assertEqual((out["session_id"], out["structured"]["run_id"]), ("c1", "r"))
+        self.assertIsNone(out["agent_error"])
+        cur = {"type": "result", "subtype": "success", "is_error": False, "result": "OK\n" + json.dumps(good),
+               "session_id": "s1", "request_id": "q", "usage": {}}
+        out = summarize.parse_single_json(json.dumps(cur))
+        self.assertEqual(out["session_id"], "s1")
+        self.assertEqual(summarize.extract_structured(out["final_text"])["run_id"], "r")
+
+
 class TestThreadView(unittest.TestCase):
     def test_cycle_and_orphans_are_safe(self):
         ev = [
