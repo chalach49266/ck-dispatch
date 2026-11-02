@@ -1,0 +1,34 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "kind", "parent_run_id", "from", "workspace", "workspace_root", "lead", "task_type", "title", "worker", "model", "cwd", "mode", "approved_actions", "write_scope", "deliverable", "budget", "created_at", "config_path", "ck_dispatch_version"],
+  "properties": {
+    "run_id": {"type": "string"},
+    "kind": {"type": "string", "enum": ["dispatch", "review"]},
+    "parent_run_id": {"type": ["string", "null"]},
+    "from": {"type": "string"},
+    "workspace": {"type": "string"},
+    "workspace_root": {"type": "string"},
+    "lead": {"type": ["string", "null"]},
+    "task_type": {"type": "string"},
+    "title": {"type": "string"},
+    "worker": {"type": "string", "enum": ["claude", "codex", "cursor", "agy"]},
+    "model": {"type": ["string", "null"]},
+    "cwd": {"type": "string"},
+    "mode": {"type": "string", "enum": ["plan", "edit-approved"]},
+    "approved_actions": {"type": "array", "items": {"type": "string"}},
+    "write_scope": {"type": "array", "items": {"type": "string"}},
+    "deliverable": {"type": "string"},
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timeout_s"],
+      "properties": {"timeout_s": {"type": "integer"}}
+    },
+    "review": {"type": ["object", "null"]},
+    "task_source": {"type": ["string", "null"]},
+    "created_at": {"type": "string"},
+    "config_path": {"type": "string"},
+    "ck_dispatch_version": {"type": "string"}
+  }
+}

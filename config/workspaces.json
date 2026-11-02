@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "_note": "Paths may start with ~. Folder lists are relative to each workspace root. raw_readonly comes from the workspace rule files (see raw_source); extra_protected_dirs are ck-run additions (agent configs, skill mirrors, environments, backups). Forbidden flags and edit permissions per agent are in code (ckdispatch/guards.py, ckdispatch/flags.py), not here.",
+  "onedrive_root": "~/Library/CloudStorage/OneDrive-WashingtonUniversityinSt.Louis",
+  "local_root": "~/PhD_local",
+  "runs_dir": "~/PhD_local/agent_runs",
+  "local_protected": ["ck-dispatch", "agent_runs", "grok-bot-agents", "Device Fabrication", "NV Compact Magnetometer"],
+  "bin_dirs": ["~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"],
+  "default_timeout_s": 1200,
+  "max_timeout_s": 7200,
+  "max_runs_per_workspace": 2,
+  "scan_budget_s": 120,
+  "scan_max_entries": 1000000,
+  "workspaces": {
+    "devfab": {
+      "name": "Device Fabrication",
+      "aliases": ["devfab", "device-fabrication", "DeviceFab", "Device Fabrication"],
+      "root": "~/Library/CloudStorage/OneDrive-WashingtonUniversityinSt.Louis/Documents/PhD/Device Fabrication",
+      "wiki_first": ["Design Library/index.md", "Design Library/maps/ai-retrieval-guide.md"],
+      "open_questions": "Design Library/questions/open-questions.md",
+      "rule_files": [".agents/AGENTS.md", "CLAUDE.md", "Design Library/CLAUDE.md"],
+      "raw_source": "Device Fabrication/.agents/AGENTS.md:78-83 and CLAUDE.md:73-78 ('Raw source folders (read-only unless asked)')",
+      "raw_readonly": [
+        "Projects/CK Design",
+        "Projects/Microwave Design",
+        "Fabrication",
+        "Projects/ESEM",
+        "Projects/Simulation",
+        "Projects/Result",
+        "Idea Inspiration",
+        "Paper",
+        "Material",
+        "Design Yard",
+        "Archive",
+        "Photonics_Ecosystem/repos",
+        "Microwave_Ecosystem/repos"
+      ],
+      "extra_protected_dirs": [".venv", ".claude", ".cursor", ".obsidian"],
+      "writable_only": [],
+      "protected_files": [
+        "AGENTS.md",
+        "CLAUDE.md",
+        ".agents/AGENTS.md",
+        "Design Library/CLAUDE.md",
+        "Design Library/AGENTS.md"
+      ]
+    },
+    "nv": {
+      "name": "NV Compact Magnetometer",
+      "aliases": ["nv", "nv-magnetometer", "NV", "NV Compact Magnetometer"],
+      "root": "~/Library/CloudStorage/OneDrive-WashingtonUniversityinSt.Louis/Documents/PhD/NV Compact Magnetometer",
+      "wiki_first": ["NV Project/index.md", "NV Project/wiki/maps/ai_retrieval_guide.md"],
+      "open_questions": "NV Project/wiki/questions/open_questions.md",
+      "rule_files": ["CLAUDE.md", "NV Project/CLAUDE.md", "AGENTS.md"],
+      "raw_source": "NV Compact Magnetometer/CLAUDE.md:15 ('The rest of this workspace ... holds the raw, human-owned sources') and NV Project/CLAUDE.md 'Raw sources (read-only, never modify)' list",
+      "raw_readonly": [
+        "nv_magnetometer_project",
+        "NV_Magnetometry_Software-main",
+        "NV_ODMR_FPGA_ARM_PS_20260902",
+        "Literature",
+        "System_Design",
+        "IMU",
+        "Patent",
+        "AQS",
+        "output",
+        "qick",
+        "qick-dawg",
+        "PYNQ",
+        "Archive"
+      ],
+      "extra_protected_dirs": ["qick-dawg (backup)", "qickdawg_venv", "qickdawg_py310", ".claude", ".cursor", ".agents", ".obsidian"],
+      "writable_only": ["NV Project"],
+      "protected_files": [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "NV Project/CLAUDE.md",
+        "NV Project/AGENTS.md"
+      ]
+    }
+  }
+}

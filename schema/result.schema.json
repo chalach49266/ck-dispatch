@@ -1,0 +1,43 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "status", "summary", "report_md", "findings", "files_read", "files_changed", "numbers", "proposed_changes", "open_questions", "needs_approval"],
+  "properties": {
+    "run_id": {"type": "string"},
+    "status": {"type": "string", "enum": ["ok", "partial", "blocked", "failed"]},
+    "summary": {"type": "array", "items": {"type": "string"}, "description": "1 to 10 short lines. ck-run saves them as summary.md."},
+    "report_md": {"type": "string", "description": "The full answer in Markdown."},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim", "evidence", "severity"],
+        "properties": {
+          "claim": {"type": "string"},
+          "evidence": {"type": "string"},
+          "severity": {"type": "string", "enum": ["info", "minor", "major", "blocker"]}
+        }
+      }
+    },
+    "files_read": {"type": "array", "items": {"type": "string"}},
+    "files_changed": {"type": "array", "items": {"type": "string"}},
+    "numbers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["value", "unit", "source", "verified"],
+        "properties": {
+          "value": {"type": "string"},
+          "unit": {"type": "string"},
+          "source": {"type": "string"},
+          "verified": {"type": "boolean"}
+        }
+      }
+    },
+    "proposed_changes": {"type": "string"},
+    "open_questions": {"type": "array", "items": {"type": "string"}},
+    "needs_approval": {"type": "array", "items": {"type": "string"}}
+  }
+}

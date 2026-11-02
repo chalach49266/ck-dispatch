@@ -1,0 +1,211 @@
+"""Hard guards: forbidden permission flags, write-scope checks, and the child environment.
+
+These rules are code, not config, so a config file cannot loosen them.
+"""
+from __future__ import annotations
+
+import os
+
+from .config import Config, Workspace, inside, overlap
+from .errors import Refused
+
+# Any token we hand to an agent CLI (except the prompt itself) that contains one of these
+# (case-insensitive) is refused.
+FORBIDDEN_SUBSTRINGS = (
+    "dangerously",        # --dangerously-skip-permissions, --dangerously-bypass-approvals-and-sandbox, ...-hook-trust
+    "skip-permissions",
+    "bypasspermissions",  # claude --permission-mode bypassPermissions
+    "bypass-approvals",
+    "yolo",               # cursor --yolo, omp yolo
+    "full-access",        # codex -s danger-full-access
+    "full-auto",          # codex --full-auto
+    "always-proceed",     # agy tool policy that auto-runs commands
+    "approve-for-me",
+    "auto-review",        # cursor server-side auto approval
+    "approve-mcps",
+    "dontask",
+    "printenv",           # cursor --printenv dumps the environment
+    "remote-control",
+    "mic-serve",
+    "ignore-rules",
+    "auth-token",
+    "api-key",
+)
+FORBIDDEN_FLAGS = {"-f", "--force", "--bare", "-w", "--worktree", "--auto"}
+# Bare words that name a forbidden permission mode.
+FORBIDDEN_WORDS = {"auto", "bypasspermissions", "dontask", "yolo", "danger-full-access",
+                   "full-access", "full-auto", "always-proceed"}
+# Allowed values for permission/sandbox flags (allowlist; anything else is refused).
+MODE_VALUES = {
+    "--permission-mode": {"plan", "acceptedits"},
+    "--mode": {"plan", "ask", "accept-edits"},
+    "-s": {"read-only", "workspace-write"},
+    "--sandbox": {"read-only", "workspace-write", "enabled"},
+    "-a": set(),
+    "--ask-for-approval": set(),
+    "--approval-mode": set(),
+    "--approval-policy": set(),
+}
+CONFIG_FLAGS = {"-c", "--config"}
+ALLOWED_CONFIG_OVERRIDES = {"sandbox_workspace_write.network_access=false"}
+MODEL_FLAGS = {"--model", "-m"}
+
+# ck-run's own options whose value is free text or a path (not checked for bare words).
+CK_FREE_TEXT = {"--title", "--note", "--focus", "--approved", "--prompt-file", "--write-scope", "--lead"}
+# Permission flags CK may never pass to ck-run: ck-run sets them itself.
+CK_PERMISSION_FLAGS = {"--permission-mode", "--sandbox", "-s", "--approval-mode", "--approval-policy",
+                       "-a", "--ask-for-approval", "-c", "--config", "--settings", "--allowedtools",
+                       "--allowed-tools", "--add-dir"}
+
+HEAVY_NAMES = {".git", ".venv", "venv", "node_modules", "site-packages", "__pypackages__"}
+
+
+def _bad_substring(tok: str) -> str | None:
+    low = tok.lower()
+    for s in FORBIDDEN_SUBSTRINGS:
+        if s in low:
+            return s
+    return None
+
+
+def check_ck_argv(argv: list) -> None:
+    """Refuse forbidden permission flags or words in ck-run's own command line."""
+    i = 0
+    while i < len(argv):
+        t = str(argv[i])
+        low = t.lower()
+        if low.startswith("-"):
+            name, eq, val = low.partition("=")
+            if name in FORBIDDEN_FLAGS:
+                raise Refused(f"forbidden flag {t}")
+            bad = _bad_substring(name)
+            if bad:
+                raise Refused(f"forbidden flag {t}")
+            if name in CK_PERMISSION_FLAGS:
+                raise Refused(f"{t} is not accepted: ck-run sets agent permissions itself (use --mode read|edit)")
+            value = val if eq else (str(argv[i + 1]) if i + 1 < len(argv) else None)
+            if name == "--mode" and value is not None and value.lower() not in ("read", "edit"):
+                raise Refused(f"forbidden mode '{value}': ck-run accepts only --mode read or --mode edit")
+            if name in MODEL_FLAGS and value is not None:
+                if _bad_substring(value) or value.lower() in (FORBIDDEN_WORDS - {"auto"}):
+                    raise Refused(f"forbidden model value '{value}'")
+            if not eq and (name in CK_FREE_TEXT or name in MODEL_FLAGS):
+                i += 2
+                continue
+        elif low in FORBIDDEN_WORDS:
+            raise Refused(f"forbidden permission word '{t}'")
+        elif _bad_substring(low) and not os.path.sep in t:
+            raise Refused(f"forbidden permission word '{t}'")
+        i += 1
+
+
+def check_child_argv(argv: list, prompt_sentinel: object) -> None:
+    """Final check on the exact argv handed to an agent CLI. The prompt slot is skipped."""
+    n = len(argv)
+    for i, tok in enumerate(argv):
+        if tok is prompt_sentinel:
+            continue
+        t = str(tok)
+        low = t.lower()
+        bad = _bad_substring(low)
+        if bad:
+            raise Refused(f"forbidden token in agent argv: {t[:80]} (contains '{bad}')")
+        prev = str(argv[i - 1]).lower() if i else ""
+        if low.startswith("-"):
+            name_orig, eq, _ = t.partition("=")
+            val = low.partition("=")[2]
+            # short flags are case-sensitive (codex -C <dir> is not -c <config>); long flags compare lower-case
+            name = name_orig if len(name_orig) == 2 else name_orig.lower()
+            if name in FORBIDDEN_FLAGS:
+                raise Refused(f"forbidden flag in agent argv: {t}")
+            nxt = None
+            if eq:
+                nxt = val
+            elif i + 1 < n and argv[i + 1] is not prompt_sentinel and not str(argv[i + 1]).startswith("-"):
+                nxt = str(argv[i + 1]).lower()
+            if name in MODE_VALUES and nxt is not None and nxt not in MODE_VALUES[name]:
+                raise Refused(f"forbidden mode in agent argv: {name} {nxt}")
+            if name in CONFIG_FLAGS and (nxt is None or nxt not in ALLOWED_CONFIG_OVERRIDES):
+                raise Refused(f"config override not allowed in agent argv: {t} {nxt}")
+        elif low in FORBIDDEN_WORDS and prev not in MODEL_FLAGS:
+            raise Refused(f"forbidden permission word in agent argv: {t}")
+
+
+def nearest_git_root(path: str) -> str | None:
+    p = path
+    while True:
+        if os.path.exists(os.path.join(p, ".git")):
+            return p
+        parent = os.path.dirname(p)
+        if parent == p:
+            return None
+        p = parent
+
+
+def validate_write_scopes(cfg: Config, ws: Workspace, agent: str, scopes: list, edit_areas: dict) -> list:
+    """Return [{'path': real, 'literal': p, 'area': 'workspace'|'local'}] or raise Refused."""
+    if not scopes:
+        raise Refused("edit mode needs at least one --write-scope folder")
+    allowed_areas = edit_areas.get(agent, [])
+    if not allowed_areas:
+        raise Refused(f"{agent} may not edit")
+    out = []
+    for s in scopes:
+        p = os.path.expanduser(str(s))
+        if not os.path.isabs(p):
+            p = os.path.join(ws.root, p)
+        p = os.path.normpath(p)
+        if not os.path.isdir(p):
+            raise Refused(f"write scope is not an existing folder: {p}")
+        rp = os.path.realpath(p)
+        parts = set(rp.split(os.sep)) | set(p.split(os.sep))
+        heavy = parts & HEAVY_NAMES
+        if heavy:
+            raise Refused(f"write scope is inside a {sorted(heavy)[0]} folder: {p}")
+        if inside(cfg.real_home, rp) or inside(cfg.home, p):
+            raise Refused(f"write scope is your home folder or above it: {p}")
+        if inside(rp, ws.real_root):  # judged by the real path, so a symlink cannot smuggle a scope in
+            area = "workspace"
+        elif inside(rp, cfg.real_local_root):
+            area = "local"
+        else:
+            raise Refused(f"write scope must be inside {ws.name} or ~/PhD_local: {p}")
+        if area not in allowed_areas:
+            where = "the workspace" if area == "workspace" else "~/PhD_local"
+            raise Refused(f"{agent} may not edit in {where} (allowed: {', '.join(allowed_areas)}): {p}")
+        if area == "workspace":
+            if rp == ws.real_root:
+                raise Refused(f"write scope may not be the whole workspace root; pick a subfolder: {p}")
+            for e in ws.protected_dirs:
+                if e.overlaps(p, rp):
+                    raise Refused(f"write scope overlaps the read-only folder '{e.rel}' ({ws.raw_source or 'ck-run protected list'}): {p}")
+            if ws.writable_only and not any(e.matches(p, rp) for e in ws.writable_only):
+                names = ", ".join(e.rel for e in ws.writable_only)
+                raise Refused(f"in {ws.name} agents may only write inside {names} ({ws.raw_source}): {p}")
+        else:
+            if rp == cfg.real_local_root:
+                raise Refused("write scope may not be ~/PhD_local itself; pick a repo folder")
+            for prot in cfg.local_protected:
+                if overlap(rp, prot):
+                    raise Refused(f"write scope overlaps a protected ~/PhD_local folder ({prot}): {p}")
+            for other in cfg.workspaces.values():
+                for e in other.protected_dirs:
+                    if e.overlaps(p, rp):
+                        raise Refused(f"write scope overlaps the read-only folder '{e.rel}' of {other.name}: {p}")
+            g = nearest_git_root(rp)
+            if g is None or os.path.realpath(g) == cfg.real_home or not inside(os.path.realpath(g), cfg.real_local_root):
+                raise Refused(f"a ~/PhD_local write scope must sit in its own git repo (your home folder is a git repo): {p}")
+        if not any(o["path"] == rp for o in out):
+            out.append({"path": rp, "literal": p, "area": area})
+    return out
+
+
+ENV_ALLOW = ("HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "SHELL")
+
+
+def child_env(cfg: Config) -> dict:
+    """Clean environment for an agent: an allowlist plus a fixed PATH. No keys, no tokens."""
+    env = {k: os.environ[k] for k in ENV_ALLOW if k in os.environ}
+    env["PATH"] = os.pathsep.join(cfg.bin_dirs)
+    env["NO_COLOR"] = "1"
+    return env
