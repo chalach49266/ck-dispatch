@@ -3,7 +3,8 @@
 One JSON line per event. Every line has the same keys:
   event          dispatch | review | result | refused | busy | accept
   run_id, parent_run_id
-  from, to       "CK" or an agent name (a review goes from the reviewed agent to the reviewer, via CK)
+  from, to       "CK" or an agent name (a review goes from the reviewed agent to the reviewer, via CK;
+                 the thread view labels it "CK → <reviewer> · review of <agent>'s run")
   title, workspace, task_type, agent, model, mode, approved, write_scope
   prompt_path, response_path, summary_path
   files_read, files_changed
@@ -154,9 +155,16 @@ def render_thread(events: list, run_id: str, with_summary: bool = True) -> str:
         r = rs[rid]
         op, res, acc = r.opening, r.last("result"), r.last("accept")
         kind = op.get("event")
-        frm, to = op.get("from") or "CK", op.get("to") or op.get("agent") or "?"
+        to = op.get("to") or op.get("agent") or "?"
+        if op.get("via"):
+            # A review is stored as reviewed agent → reviewer, via CK. CK dispatched it, so label it that way.
+            label = f"{op['via']} → {to} · review of {op.get('from') or '?'}'s run"
+            if kind != "review":
+                label += f" · {kind}"
+        else:
+            label = f"{op.get('from') or 'CK'} → {to} · {kind}"
         mark = "  ← requested" if rid == run_id else ""
-        L.append(f"{'#' * min(2 + depth, 6)} {num}  {frm} → {to} · {kind} · {op.get('title') or ''}{mark}")
+        L.append(f"{'#' * min(2 + depth, 6)} {num}  {label} · {op.get('title') or ''}{mark}")
         L.append(f"- run `{rid}` · {op.get('workspace') or '?'} · mode {op.get('mode') or '?'}"
                  + (f" · task {op.get('task_type')}" if op.get("task_type") else "")
                  + (f" · model {op.get('model')}" if op.get("model") else ""))

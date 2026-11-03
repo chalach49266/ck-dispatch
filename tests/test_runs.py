@@ -395,9 +395,10 @@ class TestReviewAndThread(Base):
         md = t.stdout
         self.assertTrue(md.startswith(f"# Thread {rid}"))
         self.assertIn("## 1  CK → claude · dispatch · MMI width", md)
-        self.assertIn("### 1.1  claude → codex · review · Review of", md)
-        self.assertIn("### 1.2  claude → cursor · review", md)
-        self.assertIn("### 1.3  claude → agy · review · Blind check of", md)
+        self.assertIn("### 1.1  CK → codex · review of claude's run · Review of", md)
+        self.assertIn("### 1.2  CK → cursor · review of claude's run", md)
+        self.assertIn("### 1.3  CK → agy · review of claude's run · Blind check of", md)
+        self.assertNotIn("claude → codex", md)
         self.assertIn("← requested", md)
         self.assertIn("accepted: **yes** by CK", md)
         self.assertIn("accepted: **no** by user", md)

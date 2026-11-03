@@ -234,6 +234,24 @@ class TestThreadView(unittest.TestCase):
         with self.assertRaises(KeyError):
             ledger.render_thread(ev, "missing")
 
+    def test_review_label_shows_ck_as_dispatcher(self):
+        ev = [
+            {"event": "dispatch", "run_id": "A", "from": "CK", "to": "claude", "via": None, "title": "a", "ts": "1"},
+            {"event": "result", "run_id": "A", "from": "claude", "to": "CK", "status": "ok", "ts": "2"},
+            {"event": "review", "run_id": "R", "parent_run_id": "A", "from": "claude", "to": "codex",
+             "via": "CK", "title": "Review of A: a", "ts": "3"},
+            {"event": "result", "run_id": "R", "from": "codex", "to": "CK", "status": "ok", "ts": "4"},
+            {"event": "busy", "run_id": "B", "parent_run_id": "A", "from": "claude", "to": "agy",
+             "via": "CK", "status": "busy", "title": "Review of A: a", "ts": "5"},
+        ]
+        md = ledger.render_thread(ev, "R")
+        self.assertIn("## 1  CK → claude · dispatch · a", md)
+        self.assertIn("### 1.1  CK → codex · review of claude's run · Review of A: a  ← requested", md)
+        self.assertIn("### 1.2  CK → agy · review of claude's run · busy · Review of A: a", md)
+        self.assertIn("- codex → CK: **ok**", md)
+        self.assertNotIn("claude → codex", md)
+        self.assertNotIn("claude → agy", md)
+
 
 class TestRoute(unittest.TestCase):
     def test_parse_reset(self):

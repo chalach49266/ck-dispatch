@@ -115,7 +115,8 @@ accept), `run_id`, `parent_run_id`, `from` (CK or agent), `to`, `via`, `title`, 
 `files_read`, `files_changed`, `status`, `accepted`, `ts`, `started_at`, `finished_at`, `duration_s`,
 `exit_code`, `note`. A review goes from the reviewed agent to the reviewer, via CK. `accepted` is set by
 `ck-run accept`. `ck-run thread <run_id>` finds the root of the chain and prints it as markdown, with
-reviews and follow-ups (`--parent`) nested and each run's summary quoted.
+reviews and follow-ups (`--parent`) nested and each run's summary quoted. A review's heading reads
+`CK → <reviewer> · review of <agent>'s run` (CK dispatched it; the ledger line keeps `from` = reviewed agent).
 
 ## Cross-review
 
@@ -156,7 +157,7 @@ values for permission flags (`plan`, `acceptEdits`, `accept-edits`, `ask`, `read
 ```
 cd ~/PhD_local/ck-dispatch && python3 -I tests/run_all.py
 ```
-42 tests, about 16 s. Stub CLIs (`tests/fake_cli.py`), a temp HOME, fake workspaces and a test config.
+43 tests, about 16 s. Stub CLIs (`tests/fake_cli.py`), a temp HOME, fake workspaces and a test config.
 No network, no real agent. They cover: no forbidden flag for any agent or mode; every refusal case; every
 write-scope rule; env allowlist; rulecheck plants (read-mode write, raw write, symlinked raw repo, new
 `.venv`, rule file, credential read, `git push`, text-only mention, agy mode warning); timeout kill;
