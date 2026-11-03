@@ -1,0 +1,42 @@
+"""Mock osascript for the offline tests: never talks to Terminal.
+
+The sandbox copies this file (with an absolute shebang) as stubs/osascript and points the test config's
+live.osascript at it. Behaviour comes from osascript.json next to the copy: {"mode": ...}
+  fail    (default) exit 1 like a denied Apple-events permission -> ck-run falls back to headless
+  run     act like Terminal: run the window command (item 1 of argv) detached, in its own session
+  silent  exit 0 but never run the command (a window that never starts the agent)
+Every call is recorded in osascript-calls/NNN.json (argv, env).
+"""
+import json
+import os
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+
+
+def main():
+    try:
+        with open(os.path.join(HERE, "osascript.json")) as f:
+            ctrl = json.load(f)
+    except (OSError, ValueError):
+        ctrl = {}
+    mode = ctrl.get("mode", "fail")
+    calls = os.path.join(HERE, "osascript-calls")
+    os.makedirs(calls, exist_ok=True)
+    n = len(os.listdir(calls))
+    with open(os.path.join(calls, f"{n:03d}.json"), "w") as f:
+        json.dump({"argv": sys.argv, "env": dict(os.environ), "mode": mode}, f)
+    if mode == "fail":
+        sys.stderr.write("execution error: Not authorized to send Apple events to Terminal. (-1743)\n")
+        sys.exit(1)
+    command = sys.argv[-2]  # osascript -e ... -e ... <command> <title>
+    if mode == "run":
+        with open(os.path.join(HERE, "window.log"), "ab") as log:
+            subprocess.Popen(["/bin/sh", "-c", command], stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                             start_new_session=True, close_fds=True)
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

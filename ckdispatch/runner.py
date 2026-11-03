@@ -6,17 +6,19 @@ import json
 import os
 import re
 import secrets
+import shlex
 import signal
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime
 
-from . import VERSION, ledger, route, rulecheck, summarize
+from . import VERSION, ledger, live, route, rulecheck, summarize
 from . import prompt as P
 from .config import CLAUDE_GUARD_BASE, PACKET_SCHEMA, REPO, RESULT_SCHEMA, Config, Workspace, inside
 from .errors import Refused
-from .flags import AGENTS, EDIT_AREAS, SCHEMA_ENFORCED_BY_FLAG, build, redacted
+from .flags import AGENTS, EDIT_AREAS, SCHEMA_ENFORCED_BY_FLAG, build, build_live, redacted
 from .guards import child_env, validate_write_scopes
 from .schema import load as load_schema
 from .schema import validate
@@ -46,6 +48,7 @@ class Spec:
         self.from_ = kw.get("from_") or "CK"
         self.review = kw.get("review")  # dict for reviews
         self.lead = kw.get("lead")
+        self.live = bool(kw.get("live"))  # agent in its own interactive CLI, in a Terminal window
         self.run_id = ""
 
 
@@ -105,7 +108,10 @@ class SlotLock:
         self.fds = []
 
 
-def write_claude_settings(cfg: Config, path: str) -> None:
+def write_claude_settings(cfg: Config, path: str, live_run_dir: str | None = None) -> None:
+    """Deny rules for one run. Headless: no edits anywhere in agent_runs. Live: the agent must write
+    result.md and summary.md in its own run folder, so agent_runs is denied piece by piece instead: the
+    ledger, state, locks, every other run folder that exists now, and ck-run's own files in this run."""
     with open(CLAUDE_GUARD_BASE, encoding="utf-8") as f:
         base = json.load(f)
     deny = list(base["permissions"]["deny"])
@@ -113,10 +119,21 @@ def write_claude_settings(cfg: Config, path: str) -> None:
     for ws in cfg.workspaces.values():
         targets += [ws.root, ws.real_root]
         targets += [e.real for e in ws.protected_dirs if not inside(e.real, ws.real_root)]
-    targets += [os.path.realpath(REPO), cfg.runs_dir, os.path.realpath(cfg.runs_dir)]
+    run_bases = list(dict.fromkeys([cfg.runs_dir, os.path.realpath(cfg.runs_dir)]))
+    targets += [os.path.realpath(REPO)] + ([] if live_run_dir else run_bases)
     for t in dict.fromkeys(targets):
         deny.append(f"Edit(/{t}/**)")  # '//abs/path' = absolute path in Claude permission rules
-    _write(path, json.dumps({"permissions": {"deny": deny}}, indent=1))
+    if live_run_dir:
+        rid = os.path.basename(live_run_dir)
+        for rb in run_bases:
+            deny += [f"Edit(/{rb}/ledger.jsonl)", f"Edit(/{rb}/state.json)", f"Edit(/{rb}/.locks/**)"]
+            try:
+                others = sorted(n for n in os.listdir(rb) if n not in (rid, ".locks") and os.path.isdir(os.path.join(rb, n)))
+            except OSError:
+                others = []
+            deny += [f"Edit(/{rb}/{n}/**)" for n in others]
+            deny += [f"Edit(/{rb}/{rid}/{n})" for n in live.CONTROL_FILES]
+    _write(path, json.dumps({"permissions": {"deny": list(dict.fromkeys(deny))}}, indent=1))
 
 
 def _write(path: str, text: str) -> None:
@@ -208,7 +225,8 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
     paths = {k: os.path.join(run_dir, v) for k, v in {
         "prompt": "prompt.md", "task": "task.md", "result_md": "result.md", "result_json": "result.json",
         "summary": "summary.md", "settings": "claude-settings.json", "packet": "packet.json",
-        "cmd": "cmd.txt", "rulecheck": "rulecheck.json", "marker": ".marker"}.items()}
+        "cmd": "cmd.txt", "rulecheck": "rulecheck.json", "marker": ".marker",
+        "prompt_live": "prompt-live.md", "settings_live": "claude-settings-live.json", "live_sh": "live.sh"}.items()}
     base = {"run_id": spec.run_id, "parent_run_id": spec.parent_run_id, "title": spec.title,
             "workspace": ws.key, "task_type": spec.task_type, "agent": spec.agent, "model": spec.model,
             "mode": spec.mode, "approved": spec.approved, "via": "CK" if spec.kind == "review" else None}
@@ -239,6 +257,12 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
         cmd = build(cfg, ws, spec.agent, mode=spec.mode, scopes=scopes, model=spec.model, run_dir=run_dir,
                     schema_path=RESULT_SCHEMA, extra_read_dirs=read_dirs, timeout_s=int(spec.timeout_s),
                     claude_settings_path=paths["settings"])
+        lv = None
+        if spec.live:
+            sid = str(uuid.uuid4()) if spec.agent == "claude" else None
+            lv = {"session_id": sid, "cmd": build_live(
+                cfg, ws, spec.agent, mode=spec.mode, scopes=scopes, model=spec.model, run_dir=run_dir,
+                extra_read_dirs=read_dirs, claude_settings_path=paths["settings_live"], session_id=sid)}
     except Refused as e:
         if not dry_run:
             ledger.append(cfg.runs_dir, **base, event="refused", status="refused", note=str(e),
@@ -251,14 +275,25 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
     foot = P.footer(run_id=spec.run_id, include_schema=not SCHEMA_ENFORCED_BY_FLAG[spec.agent], schema_path=RESULT_SCHEMA)
     prompt_text = P.assemble(head, spec.title, spec.task_text, foot)
     env = child_env(cfg)
-    cmd_txt = "\n".join([
+    lines = [
         f"# ck-run {VERSION} · run {spec.run_id}",
         f"# binary: {cmd.binary}",
         f"# cwd: {cmd.cwd}",
         f"# env: only {', '.join(sorted(env))}; PATH={env['PATH']}",
         f"# prompt: {paths['prompt']} ({'stdin' if cmd.stdin_prompt else 'last argument'})",
         f"# config: {cfg.path}",
-        redacted(cmd, RESULT_SCHEMA, paths["prompt"]), ""])
+        redacted(cmd, RESULT_SCHEMA, paths["prompt"])]
+    if lv:
+        lv["prompt"] = P.assemble(
+            P.header(ws=ws, run_id=spec.run_id, agent=spec.agent, kind=spec.kind, mode=spec.mode,
+                     approved=spec.approved, scopes=scopes, live_outbox=run_dir),
+            spec.title, spec.task_text,
+            P.footer(run_id=spec.run_id, include_schema=True, schema_path=RESULT_SCHEMA, live_outbox=run_dir))
+        lines += [f"# live (default; --no-live for headless only): a Terminal window runs {paths['live_sh']},",
+                  f"# which starts the interactive CLI with env -i (same env, TERM from the window) and "
+                  f"{paths['prompt_live']} as the first message. The command above is the fallback.",
+                  redacted(lv["cmd"], RESULT_SCHEMA, paths["prompt_live"])]
+    cmd_txt = "\n".join(lines + [""])
     if dry_run:
         sys.stdout.write(cmd_txt)
         return 0
@@ -270,12 +305,75 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
         print(f"ck-run: BUSY: {note}; try again later", file=sys.stderr)
         return EXIT["busy"]
     try:
-        return _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, paths, base)
+        return _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, paths, base, lv)
     finally:
         lock.release()
 
 
-def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, paths, base) -> int:
+def _write_replace(path: str, text: str) -> None:
+    tmp = f"{path}.ck-tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def _live_phase(cfg, spec, ws, run_dir, paths, lv, env):
+    """Run the agent in a Terminal window. Returns (info, outcome); outcome None = fall back to headless."""
+    info = {"requested": True, "used": False, "window_error": None, "state": None, "session_id": None,
+            "session_path": None, "session_how": None, "recovered_from_session": False, "summary_text": ""}
+    title = f"ck-run {spec.agent} · {ws.name} · {spec.run_id}"
+    live.write_script(paths["live_sh"], run_dir=run_dir, cwd=lv["cmd"].cwd, env=env, argv=lv["cmd"].argv,
+                      prompt_path=paths["prompt_live"], title=title)
+    t0 = time.time()
+    ok, err = live.open_window(cfg.live_osascript, f"/bin/bash {shlex.quote(paths['live_sh'])}", title, env)
+    if not ok:
+        live.take_claim(run_dir)  # a window that opens anyway later finds the claim and does nothing
+        info["window_error"] = err
+        return info, None
+    if not live.wait_started(run_dir, cfg.live_start_timeout_s, min(cfg.live_poll_s, 0.5)):
+        info["window_error"] = f"the Terminal window did not start the agent within {cfg.live_start_timeout_s:g} s"
+        return info, None
+    info["used"] = True
+    old = signal.signal(signal.SIGTERM, _on_sigterm)
+    try:
+        w = live.wait_done(run_dir, t0 + int(spec.timeout_s), cfg.live_poll_s)
+    except KeyboardInterrupt:
+        w = {"state": "interrupted", "exit_code": None}
+    finally:
+        signal.signal(signal.SIGTERM, old)
+    if w["state"] in ("timeout", "interrupted"):
+        info["stop"] = live.stop(run_dir)
+    info["state"] = w["state"]
+    result_text = _read_text(paths["result_md"])
+    if (w["state"] == "exited" and w["exit_code"] not in (None, 0, 130) and not result_text
+            and time.time() - t0 < cfg.live_early_exit_s):
+        info["used"] = False
+        info["window_error"] = (f"the agent CLI exited with code {w['exit_code']} in the window after "
+                                f"{time.time() - t0:.0f} s, before writing anything")
+        return info, None
+    info["summary_text"] = _read_text(paths["summary"], 200_000)
+    sess = live.find_session(spec.agent, cfg.home, t0 - 5, spec.run_id, known_id=lv["session_id"])
+    info.update(session_id=sess["id"], session_path=sess["path"], session_how=sess["how"])
+    structured = summarize.extract_structured(result_text)
+    if not (isinstance(structured, dict) and "summary" in structured):
+        structured = None
+    final_text = result_text
+    if structured is None:
+        got, text = live.recover_result(sess["path"], spec.run_id)
+        if got is not None:
+            structured, final_text = got, text
+            info["recovered_from_session"] = True
+    parsed = {"final_text": final_text, "structured": structured, "actions": [], "observed_reads": [],
+              "session_id": sess["id"], "cost_usd": None, "agent_error": None, "finished_reason": None,
+              "text_only": True}
+    info["exit_code"] = w["exit_code"]
+    # Once summary.md is written the work is done; how the user later leaves the CLI (Ctrl+C = 130) does not count.
+    code = None if w["state"] == "done" else w["exit_code"]
+    return info, (code, w["state"] == "timeout", w["state"] == "interrupted", parsed)
+
+
+def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, paths, base, lv=None) -> int:
     old_umask = os.umask(0o077)
     try:
         os.makedirs(cfg.runs_dir, mode=0o700, exist_ok=True)
@@ -288,6 +386,10 @@ def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, 
     _write(paths["cmd"], cmd_txt)
     if spec.agent == "claude":
         write_claude_settings(cfg, paths["settings"])
+    if lv:
+        _write(paths["prompt_live"], lv["prompt"])
+        if spec.agent == "claude":
+            write_claude_settings(cfg, paths["settings_live"], live_run_dir=run_dir)
     packet = {
         "run_id": spec.run_id, "kind": spec.kind, "parent_run_id": spec.parent_run_id, "from": spec.from_,
         "workspace": ws.key, "workspace_root": ws.root, "lead": spec.lead, "task_type": spec.task_type,
@@ -302,19 +404,28 @@ def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, 
         raise Refused(f"internal: packet does not match its schema: {perr[:3]}")
     _write(paths["packet"], json.dumps(packet, indent=2, ensure_ascii=False))
     ledger.append(cfg.runs_dir, **base, event=spec.kind, status="dispatched",
-                  prompt_path=paths["prompt"], response_path=paths["result_md"], summary_path=paths["summary"],
-                  write_scope=packet["write_scope"], started_at=started,
+                  prompt_path=paths["prompt_live"] if lv else paths["prompt"], response_path=paths["result_md"],
+                  summary_path=paths["summary"], write_scope=packet["write_scope"], started_at=started,
+                  note="live: interactive CLI in a Terminal window (headless if the window fails)" if lv else None,
                   **{"from": spec.from_, "to": spec.agent})
 
     marker_ns = rulecheck.touch_marker(paths["marker"])
     t0 = time.time()
-    exit_code, timed_out, interrupted = run_child(cmd, prompt_text, env, run_dir, int(spec.timeout_s))
+    live_info, outcome = (None, None)
+    if lv:
+        live_info, outcome = _live_phase(cfg, spec, ws, run_dir, paths, lv, env)
+    if outcome is None:
+        exit_code, timed_out, interrupted = run_child(cmd, prompt_text, env, run_dir, int(spec.timeout_s))
+        parsed = summarize.parse(spec.agent, run_dir)
+        stdout = _read_text(os.path.join(run_dir, "stdout.log"))
+        stderr = _read_text(os.path.join(run_dir, "stderr.log"), 200_000)
+    else:
+        exit_code, timed_out, interrupted, parsed = outcome
+        stdout, stderr = parsed["final_text"], ""  # text only: the rule check scans the agent's result text
+    is_live = bool(live_info and live_info["used"])
     duration = round(time.time() - t0, 1)
     finished = ledger.now_iso()
 
-    parsed = summarize.parse(spec.agent, run_dir)
-    stdout = _read_text(os.path.join(run_dir, "stdout.log"))
-    stderr = _read_text(os.path.join(run_dir, "stderr.log"), 200_000)
     scan = rulecheck.scan_changed(rulecheck.scan_roots(ws, scopes), marker_ns, cfg.scan_budget_s, cfg.scan_max_entries)
     cls = rulecheck.classify(cfg, ws, spec.mode, scopes, scan["changed"], run_dir)
     tr = rulecheck.scan_transcript(parsed, stdout, stderr)
@@ -326,8 +437,21 @@ def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, 
 
     structured = parsed["structured"] if isinstance(parsed["structured"], dict) else None
     schema_errors = validate(structured, load_schema(RESULT_SCHEMA)) if structured else ["no result JSON found"]
-    lines, src, sum_note = summarize.summary_lines(structured, parsed["final_text"], paths["result_md"])
+    agent_summary = (live_info or {}).get("summary_text", "").strip() if is_live else ""
+    if agent_summary:  # live: the agent wrote summary.md itself
+        lines, src, sum_note = summarize.summary_lines({"summary": agent_summary}, "", paths["result_md"])
+    else:
+        lines, src, sum_note = summarize.summary_lines(structured, parsed["final_text"], paths["result_md"])
     notes = [n for n in [sum_note] if n]
+    if live_info and not is_live:
+        notes.append(f"live window not used ({live_info['window_error']}); ran headless")
+    if is_live:
+        notes.append(f"live: ran in a Terminal window; state {live_info['state']}; session "
+                     f"{live_info['session_id'] or 'unknown'} ({live_info['session_how']})")
+        if live_info["recovered_from_session"]:
+            notes.append("result recovered from the session log: the agent did not write it to result.md")
+        if not agent_summary and live_info["state"] != "timeout":
+            notes.append("the agent did not write summary.md")
     reported = [_norm(f, ws.root) for f in (structured or {}).get("files_read") or [] if isinstance(f, str)]
     observed = [_norm(f, ws.root) for f in parsed["observed_reads"]]
     files_read = list(dict.fromkeys(reported + observed))
@@ -364,13 +488,16 @@ def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, 
     if parsed.get("finished_reason") == "print_timeout":
         problems.append("agy print timeout: the response is partial")
 
+    # live: the agent left the window without writing anything ck-run can use
+    live_gave_nothing = is_live and live_info["state"] == "exited" and structured is None and not agent_summary
     if rc["violations"]:
         status = "violation"
     elif rc["flags"]:
         status = "flagged"
     elif timed_out:
         status = "timeout"
-    elif interrupted or agent_status == "failed" or (structured is None and (exit_code != 0 or parsed["agent_error"])):
+    elif (interrupted or agent_status == "failed" or live_gave_nothing
+          or (structured is None and (exit_code not in (0, None) or parsed["agent_error"]))):
         status = "failed"
     elif problems:
         status = "partial"
@@ -397,14 +524,28 @@ def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, 
         "session_id": parsed["session_id"], "cost_usd": parsed["cost_usd"],
         "started_at": started, "finished_at": finished, "duration_s": duration,
         "paths": paths, "actions_count": len(parsed["actions"]),
+        "live": ({k: v for k, v in live_info.items() if k != "summary_text"} if live_info else None),
     }
-    _write(paths["result_json"], json.dumps(rec, indent=2, ensure_ascii=False, default=str))
-    _write(paths["result_md"], summarize.render_result_md(rec))
-    _write(paths["rulecheck"], json.dumps(rc, indent=2, ensure_ascii=False))
-    _write(paths["summary"], "\n".join(lines) + "\n")
+    summary_text = "\n".join(lines) + "\n"
+    if is_live:
+        # The agent's own result.md stays (ck-run's view of it is result.json). summary.md is rewritten only
+        # to cut it to 10 lines, so it always matches what ck-run prints.
+        _write_replace(paths["result_json"], json.dumps(rec, indent=2, ensure_ascii=False, default=str))
+        if not os.path.exists(paths["result_md"]):
+            _write_replace(paths["result_md"], summarize.render_result_md(rec))
+        _write_replace(paths["rulecheck"], json.dumps(rc, indent=2, ensure_ascii=False))
+        if _read_text(paths["summary"], 200_000) != summary_text:
+            _write_replace(paths["summary"], summary_text)
+    else:
+        put = _write_replace if live_info else _write  # after a failed window, a stray file may exist
+        put(paths["result_json"], json.dumps(rec, indent=2, ensure_ascii=False, default=str))
+        put(paths["result_md"], summarize.render_result_md(rec))
+        put(paths["rulecheck"], json.dumps(rc, indent=2, ensure_ascii=False))
+        put(paths["summary"], summary_text)
 
     ledger.append(cfg.runs_dir, **base, event="result", status=status,
-                  prompt_path=paths["prompt"], response_path=paths["result_md"], summary_path=paths["summary"],
+                  prompt_path=paths["prompt_live"] if is_live else paths["prompt"],
+                  response_path=paths["result_md"], summary_path=paths["summary"],
                   files_read=files_read, files_changed=rc["changed_in_scope"], write_scope=[s["path"] for s in scopes],
                   started_at=started, finished_at=finished, duration_s=duration, exit_code=exit_code,
                   note="; ".join(notes + rc["violations"] + rc["flags"])[:1000] or None,
@@ -420,7 +561,7 @@ def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, 
 
 
 def review_spec(cfg: Config, orig_run_id: str, by: str, *, blind: bool, focus: str | None,
-                title: str | None, model: str | None, timeout_s: int | None) -> Spec:
+                title: str | None, model: str | None, timeout_s: int | None, live: bool = False) -> Spec:
     if not valid_run_id(orig_run_id):
         raise Refused(f"not a valid run id: {orig_run_id}")
     r = ledger.find_run(cfg.runs_dir, orig_run_id)
@@ -447,4 +588,4 @@ def review_spec(cfg: Config, orig_run_id: str, by: str, *, blind: bool, focus: s
     return Spec(agent=by, ws=ws, title=title or default_title, task_text=task_text, task_source=None,
                 task_type=op.get("task_type") or "general", model=model, mode="read", timeout_s=timeout_s,
                 parent_run_id=orig_run_id, kind="review", from_=orig_agent, review=orig,
-                read_dirs=[] if blind else [run_dir])
+                read_dirs=[] if blind else [run_dir], live=live)

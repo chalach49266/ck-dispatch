@@ -170,8 +170,9 @@ def render_thread(events: list, run_id: str, with_summary: bool = True) -> str:
                  + (f" · model {op.get('model')}" if op.get("model") else ""))
         if op.get("approved"):
             L.append(f"- edit approved: \"{op['approved']}\" · scope: " + ", ".join(f"`{s}`" for s in op.get("write_scope") or []))
-        if op.get("prompt_path"):
-            L.append(f"- prompt: `{op['prompt_path']}`")
+        prompt_path = (res or {}).get("prompt_path") or op.get("prompt_path")  # the one used (live or headless)
+        if prompt_path:
+            L.append(f"- prompt: `{prompt_path}`")
         if res:
             L.append(f"- {res.get('from') or '?'} → {res.get('to') or 'CK'}: **{res.get('status')}** · "
                      f"{_hm(res.get('started_at'))} → {_hm(res.get('finished_at'))} ({res.get('duration_s')} s)")

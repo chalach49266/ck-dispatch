@@ -18,6 +18,9 @@ Step 3 live checks (2026-11-02, docs/step3/results.md): confirmed that agy --jso
 JSON, agy -p takes the prompt as its value, agy applies --mode plan in print mode (ck-run still flags
 'not supported in print mode'), and claude puts the schema result in 'structured_output'. No flag
 needed changing. Codex was not run live (blocked by the merge-gate mod), so its argv stays [assumed].
+
+--live (build_live, 2026-11-02): the same permission flags on each CLI's interactive mode. Initial
+prompt, per each CLI's --help: claude [prompt], codex [PROMPT], cursor agent [prompt...], agy -i <prompt>.
 """
 from __future__ import annotations
 
@@ -149,17 +152,103 @@ def build(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, mo
     return Command(agent, a, cwd, PROMPT_ON_STDIN[agent], binary)
 
 
+def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, model: str | None,
+               run_dir: str, extra_read_dirs: list, claude_settings_path: str, session_id: str | None = None,
+               binary: str | None = None) -> Command:
+    """argv for --live: the agent's own interactive CLI (TUI), with the prompt as its first message.
+
+    Same permission flags as build(); the print/exec/output/schema flags are dropped (interactive mode has
+    none). The run folder is added as a directory so the agent can write result.md and summary.md there.
+
+      claude  --strict-mcp-config --settings <live settings> --session-id <uuid> --add-dir <run> [...]
+              [--allowedTools ...] [--model M] --permission-mode plan|acceptEdits <prompt>
+              (--permission-mode comes last: --add-dir and --allowedTools take several values and would
+              swallow the prompt)
+      codex   -C <ws|scope> -s read-only|workspace-write [-c ...network_access=false --add-dir <run>]
+              -a on-request [-m M] <prompt>
+      cursor  --trust --sandbox enabled [--mode plan] --workspace <ws|scope> --add-dir <run> [...] <prompt>
+      agy     --sandbox --mode plan|accept-edits --add-dir <run> [...] -i <prompt>
+    """
+    if agent not in AGENTS:
+        raise Refused(f"unknown agent '{agent}'; use one of: {', '.join(AGENTS)}")
+    if mode not in ("read", "edit"):
+        raise Refused(f"forbidden mode '{mode}'")
+    if mode == "edit" and not scopes:
+        raise Refused("edit mode needs a validated write scope")
+    binary = binary or resolve_binary(cfg, agent)
+    scope_paths = [s["path"] for s in scopes]
+    a = [binary]
+    if agent == "claude":
+        a += ["--strict-mcp-config", "--settings", claude_settings_path]
+        if session_id:
+            a += ["--session-id", session_id]
+        for d in [run_dir] + (scope_paths if mode == "edit" else []) + list(extra_read_dirs):
+            a += ["--add-dir", d]
+        if mode == "edit":
+            a += ["--allowedTools", "Read,Grep,Glob,Edit,Write,Bash(pytest:*)"]
+        if model:
+            a += ["--model", model]
+        a += ["--permission-mode", "plan" if mode == "read" else "acceptEdits"]
+        cwd = ws.root
+    elif agent == "codex":
+        if mode == "read":
+            a += ["-C", ws.root, "-s", "read-only"]  # writes outside the sandbox need the user's approval
+            cwd = ws.root
+        else:
+            a += ["-C", scope_paths[0], "-s", "workspace-write",
+                  "-c", "sandbox_workspace_write.network_access=false"]
+            for s in scope_paths[1:] + [run_dir]:
+                a += ["--add-dir", s]
+            cwd = scope_paths[0]
+        a += ["-a", "on-request"]
+        if model:
+            a += ["-m", model]
+    elif agent == "cursor":
+        a += ["--trust", "--sandbox", "enabled"]
+        if mode == "read":
+            a += ["--mode", "plan", "--workspace", ws.root]
+            cwd = ws.root
+        else:
+            a += ["--workspace", scope_paths[0]]
+            for s in scope_paths[1:]:
+                a += ["--add-dir", s]
+            cwd = scope_paths[0]
+        for d in [run_dir] + list(extra_read_dirs):
+            a += ["--add-dir", d]
+        if model:
+            a += ["--model", model]
+    else:  # agy
+        a += ["--sandbox", "--mode", "plan" if mode == "read" else "accept-edits"]
+        if mode == "read":
+            cwd = ws.root
+        else:
+            for s in scope_paths[1:]:
+                a += ["--add-dir", s]
+            cwd = scope_paths[0]
+        for d in [run_dir] + list(extra_read_dirs):
+            a += ["--add-dir", d]
+        if model:
+            a += ["--model", model]
+        a += ["-i"]  # --prompt-interactive: run the prompt, then stay in the session
+    a += [PROMPT]
+    _assert_invariants(agent, mode, a, live=True)
+    check_child_argv(a, PROMPT)
+    return Command(agent, a, cwd, False, binary)
+
+
 def _pair(a: list, flag: str, value: str) -> bool:
     return any(a[i] == flag and a[i + 1] == value for i in range(len(a) - 1))
 
 
-def _assert_invariants(agent: str, mode: str, a: list) -> None:
+def _assert_invariants(agent: str, mode: str, a: list, live: bool = False) -> None:
     """Defence in depth: refuse if the built argv lacks the expected permission flag."""
     ok = True
     if agent == "claude":
         ok = _pair(a, "--permission-mode", "plan" if mode == "read" else "acceptEdits") and "--settings" in a
     elif agent == "codex":
         ok = _pair(a, "-s", "read-only" if mode == "read" else "workspace-write")
+        if live:
+            ok = ok and _pair(a, "-a", "on-request")
     elif agent == "cursor":
         ok = "--trust" in a and _pair(a, "--sandbox", "enabled") and (_pair(a, "--mode", "plan") == (mode == "read"))
     elif agent == "agy":

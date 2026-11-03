@@ -7,7 +7,8 @@ One runner that CK (Grok Bot) calls on the Mac to send a task to one of four age
 Status: **step 1 of the plan** (`~/.claude/plans/read-only-planning-task-do-cosmic-emerson.md`) built and
 tested offline with stub CLIs. **Step 3** (2026-11-02): live read-only probes of claude, cursor and agy with
 ck-run's own argv and env; results, session ids and resume commands in `docs/step3/results.md`. Codex was
-not run live (the `merge-gate` mod in Claude Code denies `codex exec`).
+not run live (the `merge-gate` mod in Claude Code denies `codex exec`). **Live view** (2026-11-02): `--live`
+(default on) runs each agent in its own interactive CLI in a new Terminal window; see "Live mode" below.
 
 ## Commands
 
@@ -15,8 +16,8 @@ not run live (the `merge-gate` mod in Claude Code denies `codex exec`).
 ck-run run    --agent claude|codex|cursor|agy --workspace devfab|nv --title T --prompt-file F
               [--task-type T] [--model M] [--read-dir D]... [--timeout S] [--parent RUN_ID] [--lead L]
               [--mode edit --approved "<user's words + time>" --write-scope FOLDER [--write-scope ...]]
-              [--dry-run]
-ck-run review RUN_ID --by AGENT [--blind] [--focus TEXT] [--model M] [--timeout S]
+              [--live | --no-live] [--dry-run]
+ck-run review RUN_ID --by AGENT [--blind] [--focus TEXT] [--model M] [--timeout S] [--live | --no-live]
 ck-run thread RUN_ID [--no-summary]
 ck-run accept RUN_ID [--reject] [--by CK|user] [--note TEXT]
 ck-run show   RUN_ID
@@ -63,6 +64,47 @@ Every run: the agent gets a clean environment (HOME, USER, LOGNAME, LANG, LC_*, 
 PATH, NO_COLOR; no keys, no tokens). Its process group is killed at the timeout. `cmd.txt` holds the
 command without the prompt body and without env values.
 
+## Live mode (`--live`, default on; `--no-live` = headless only)
+
+`run` and `review` open a new macOS Terminal window (`osascript` → `tell application "Terminal" to do script`)
+that runs `<run>/live.sh`. The script `cd`s to the agent's folder (the workspace, or the first write scope in
+edit mode) and starts the agent's **own interactive CLI** with `/usr/bin/env -i` (the same allowlisted env as
+headless, minus `NO_COLOR`, with `TERM` from the window) and `<run>/prompt-live.md` as the first message.
+The default comes from `live.default` in `config/workspaces.json`.
+
+| Agent | Interactive argv (same permission flags as headless) | Initial prompt (from `--help`) |
+|---|---|---|
+| claude | `--strict-mcp-config --settings <run>/claude-settings-live.json --session-id <uuid> --add-dir <run> [--add-dir <scope>] [--allowedTools ...] --permission-mode plan\|acceptEdits` | positional `[prompt]` |
+| codex | `-C <ws\|scope> -s read-only\|workspace-write [-c sandbox_workspace_write.network_access=false --add-dir <run>] -a on-request` | positional `[PROMPT]` |
+| cursor | `--trust --sandbox enabled [--mode plan] --workspace <ws\|scope> --add-dir <run>` | positional `[prompt...]` |
+| agy | `--sandbox --mode plan\|accept-edits --add-dir <run>` | `-i <prompt>` (`--prompt-interactive`) |
+
+- No `-p`/`exec`/`--output-format`/`--json-schema` (interactive mode has none), and still no
+  skip-permissions/yolo/force/full-auto/bypass flag. The same argv guard checks the live argv.
+- **codex `-a on-request`** is new and needed: your `~/.codex/config.toml` sets `approval_policy = "never"`
+  and `sandbox_mode = "danger-full-access"`; `-s` and `-a on-request` override both. `-a never` stays refused.
+- **Output**: interactive mode has no result JSON on stdout, so the live prompt asks the agent to write
+  `<run>/result.md` (full answer ending with the result JSON) and then `<run>/summary.md` (1-10 lines) LAST.
+  ck-run polls for `summary.md`; when it is written (and stable), ck-run runs the rule check, writes
+  `result.json`, cuts `summary.md` to 10 lines if needed, appends the `result` ledger line and prints the summary
+  as usual. The agent's own `result.md` is kept. The window stays open for you to read or keep talking; anything
+  you do in it after that is not checked by ck-run.
+- **Read mode + these two writes**: plan / read-only modes stop the agent from writing them, so its CLI asks
+  you first (claude: approve leaving plan mode, then the writes; codex: approve the write; cursor and agy:
+  switch out of plan mode). The live Claude settings allow edits only in this run's folder (deny rules still
+  cover both workspaces, the ledger, state, locks, every other run folder and ck-run's own files in this run).
+  If you would rather not approve, quit the agent: ck-run then looks for the answer JSON in the agent's
+  session log (claude, codex, cursor JSONL; not agy's SQLite store) and marks the run done with it.
+- **Session id**: claude gets `--session-id <uuid>` from ck-run; for codex, cursor and agy ck-run finds the
+  new session in `~/.codex/sessions/...`, `~/.cursor/projects/*/agent-transcripts/<id>/` or
+  `~/.gemini/antigravity-cli/conversations/<id>.db` that contains the run id. Saved in `result.json`.
+- **Timeout**: at `--timeout` ck-run stops the agent in the window (SIGTERM then SIGKILL to the `live.sh`
+  process group) and the status is `timeout`. Quitting the agent without writing anything gives `failed`.
+- **Fallback to headless** (same run folder, `prompt.md`, note in the result): `osascript` fails (for example
+  macOS has not allowed the caller to control Terminal), the window does not start the agent within
+  `live.start_timeout_s` (30 s; ck-run then takes `<run>/live.claim`, so a late window does nothing), or the
+  agent CLI exits with an error code within `live.early_exit_s` (20 s) without writing anything.
+
 ## Edit mode: write-scope rules
 
 - Needs `--approved` (the user's words) and at least one existing `--write-scope` folder.
@@ -97,7 +139,10 @@ command without the prompt body and without env values.
 `task.md` (CK's text) · `prompt.md` (rules header + task + output contract) · `packet.json` (Framework §5.1) ·
 `cmd.txt` · `claude-settings.json` (claude) · `stdout.log` / `stderr.log` (full raw output) · `last.md` (codex) ·
 `result.json` (parsed result + checks) · `result.md` (readable full result) · `summary.md` (max 10 lines) ·
-`rulecheck.json`. Run id: `YYYY-MM-DDTHHMMSS-<ws>-<task_type>-<agent>-<hex4>`.
+`rulecheck.json`. Live runs add `prompt-live.md`, `live.sh`, `claude-settings-live.json` (claude),
+`live.claim`, `live.pid`, `live.exit`; their `result.md` is the agent's own, and `result.json` has a `live`
+block (window error, state, session id and where it was found). Run id:
+`YYYY-MM-DDTHHMMSS-<ws>-<task_type>-<agent>-<hex4>`.
 
 ## Token saving: `summary.md`
 
@@ -113,7 +158,8 @@ One JSON line per event; every line has the same keys: `event` (dispatch, review
 accept), `run_id`, `parent_run_id`, `from` (CK or agent), `to`, `via`, `title`, `workspace`, `task_type`,
 `agent`, `model`, `mode`, `approved`, `write_scope`, `prompt_path`, `response_path`, `summary_path`,
 `files_read`, `files_changed`, `status`, `accepted`, `ts`, `started_at`, `finished_at`, `duration_s`,
-`exit_code`, `note`. A review goes from the reviewed agent to the reviewer, via CK. `accepted` is set by
+`exit_code`, `note`. A live run's `dispatch` line has a `live:` note; its `result` line's `prompt_path` is
+the prompt actually used (`prompt-live.md`, or `prompt.md` after a fallback). A review goes from the reviewed agent to the reviewer, via CK. `accepted` is set by
 `ck-run accept`. `ck-run thread <run_id>` finds the root of the chain and prints it as markdown, with
 reviews and follow-ups (`--parent`) nested and each run's summary quoted. A review's heading reads
 `CK → <reviewer> · review of <agent>'s run` (CK dispatched it; the ledger line keeps `from` = reviewed agent).
@@ -134,7 +180,7 @@ Refused in ck-run's own command line (checked before parsing; logged to the ledg
 (`--permission-mode`, `--sandbox`/`-s`, `-c`/`--config`, `--settings`, `--add-dir`, `--approval-mode`, ...),
 because ck-run sets those itself. The exact agent argv is checked again: a denylist plus an allowlist of
 values for permission flags (`plan`, `acceptEdits`, `accept-edits`, `ask`, `read-only`, `workspace-write`,
-`enabled`). The prompt text is not scanned, so a task may talk about these flags.
+`enabled`; codex `-a`/`--ask-for-approval`: only `on-request`). The prompt text is not scanned, so a task may talk about these flags.
 
 ## Rule check after each run
 
@@ -157,12 +203,19 @@ values for permission flags (`plan`, `acceptEdits`, `accept-edits`, `ask`, `read
 ```
 cd ~/PhD_local/ck-dispatch && python3 -I tests/run_all.py
 ```
-43 tests, about 16 s. Stub CLIs (`tests/fake_cli.py`), a temp HOME, fake workspaces and a test config.
-No network, no real agent. They cover: no forbidden flag for any agent or mode; every refusal case; every
-write-scope rule; env allowlist; rulecheck plants (read-mode write, raw write, symlinked raw repo, new
+62 tests, about 40 s. Stub CLIs (`tests/fake_cli.py`), a mock `osascript` (`tests/fake_osascript.py`: fails
+by default, so every older test also covers the headless fallback; `run` runs `live.sh` detached the way a
+Terminal window would; `silent` never starts it), a temp HOME, fake workspaces and a test config. No network,
+no real agent, no Terminal window. They cover: no forbidden flag for any agent or mode; every refusal case;
+every write-scope rule; env allowlist; rulecheck plants (read-mode write, raw write, symlinked raw repo, new
 `.venv`, rule file, credential read, `git push`, text-only mention, agy mode warning); timeout kill;
 workspace locks; rate-limit fallback; summary cut and fallback; UNVERIFIED tags; ledger fields; review
-sends paths not content; blind review; accept; thread view.
+sends paths not content; blind review; accept; thread view. Live (`tests/test_live.py`): interactive argv
+keeps each agent's permission flags (codex `-a on-request`, `-a never` refused); launcher script (env -i,
+claim); live Claude deny rules; each agent end to end in a mocked window (summary.md → ledger `ok`, session
+id found); Ctrl+C after summary.md is still ok; 10-line cut; rule check in live mode; answer recovered from the session log; timeout stops the
+agent; review runs live; fallback on osascript error, on a window that never starts, and on an early error
+exit; a late window does nothing; `--no-live`; `--dry-run` shows both commands.
 
 ## Step 3 live checks (2026-11-02; claude 2.1.316, codex-cli 0.166.0, agent 2026.10.22, agy 1.4.12)
 
@@ -197,6 +250,15 @@ workspace `AGENTS.md`; the git root is `~`). `codex help exec` confirms every fl
 - Claude workers still load your user hooks and plugins (for example the superpowers SessionStart text) and
   your auto-memory `MEMORY.md` index, because ck-run does not pass `--bare` (it is refused: it also skips
   keychain/OAuth login).
+- Live mode was tested only with the mock `osascript` and stub CLIs. Not yet tried on this Mac: a real
+  Terminal window (macOS asks once whether the caller may control Terminal; until you allow it, runs fall
+  back to headless), and each real TUI accepting this exact argv (`cursor --help` itself could not be run in
+  the build session; its options were read from the installed bundle).
+- Live mode has no tool log (no stdout stream), so the rule check sees only the disk and the agent's
+  `result.md` text, as for cursor and agy headless. The prompt is an argument of the agent process (as for
+  cursor and agy headless), so other local users could see it in `ps`.
+- In live read mode the agent can only write `result.md`/`summary.md` after you approve it in its CLI;
+  otherwise the run ends when you quit the agent (answer taken from the session log) or at the timeout.
 
 ## Files
 
@@ -205,7 +267,8 @@ bin/ck-run                  launcher (re-execs with python3 -I)
 ckdispatch/cli.py           commands
 ckdispatch/runner.py        one run: guards, run folder, child, parse, rulecheck, ledger, stdout
 ckdispatch/guards.py        forbidden flags, write scopes, env allowlist (code, not config)
-ckdispatch/flags.py         per-agent argv map
+ckdispatch/flags.py         per-agent argv map (headless build, interactive build_live)
+ckdispatch/live.py          --live: Terminal window, live.sh launcher, wait, stop, session stores
 ckdispatch/prompt.py        rules header, output contract, review task
 ckdispatch/summarize.py     output parsers, summary, UNVERIFIED tags, result.md
 ckdispatch/rulecheck.py     disk scan + transcript scan
@@ -215,7 +278,7 @@ config/workspaces.json      workspace roots, wiki entry files, rule files, raw f
 config/claude-guard.base.json  Claude deny rules (ck-run adds Edit denies per run)
 schema/result.schema.json   result schema (agents)   schema/packet.schema.json (packet self-check)
 docs/architecture.mmd       diagram source (PNG is step 10)
-tests/                      offline suite
+tests/                      offline suite (fake_cli.py stub agents, fake_osascript.py mock Terminal)
 examples/sample_task.md     a task file for --dry-run
 ```
 

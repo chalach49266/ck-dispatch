@@ -2,12 +2,15 @@
 
 The test sandbox copies this file (with an absolute shebang) as claude, codex, agent and agy.
 Behaviour comes from control.json next to the copy: {"default": {...}, "<agent>": {...}}.
-Every call is recorded in calls/NNN-<agent>.json (argv, cwd, env, prompt, pid).
+Every call is recorded in calls/NNN-<agent>.json (argv, cwd, env, prompt, pid, live).
+Interactive argv (ck-run --live): main_live() writes result.md + summary.md into the prompt's OUTBOX and a fake
+session file under $HOME; control keys under "live" apply only there (write_outbox, session_answer, sleep, exit).
 """
 import json
 import os
 import sys
 import time
+import uuid
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 NAME = os.path.basename(sys.argv[0])
@@ -33,12 +36,61 @@ def arg_after(flag):
     return None
 
 
+def is_live():
+    """Interactive argv (ck-run --live): no -p / exec; agy gets the prompt with -i."""
+    if AGENT == "codex":
+        return "exec" not in sys.argv
+    if AGENT == "agy":
+        return "-i" in sys.argv
+    return "-p" not in sys.argv
+
+
 def get_prompt():
+    if is_live():
+        return arg_after("-i") if AGENT == "agy" else sys.argv[-1]
     if AGENT in ("claude", "codex"):
         return sys.stdin.read()
     if AGENT == "agy":
         return arg_after("-p") or ""
     return sys.argv[-1]
+
+
+def parse_outbox(p):
+    for line in p.splitlines():
+        if line.startswith("OUTBOX: "):
+            return line[len("OUTBOX: "):].strip()
+    return None
+
+
+def write_session(ctrl, prompt, answer):
+    """Fake each CLI's session store under $HOME (paths as in docs/step3/results.md)."""
+    if not ctrl.get("session", True):
+        return
+    home = os.environ["HOME"]
+    sid = arg_after("--session-id") or str(uuid.uuid4())
+    user = {"role": "user", "content": [{"type": "text", "text": prompt}]}
+    lines = [{"type": "user", "message": user}]
+    if answer:
+        lines.append({"type": "assistant", "message": {"role": "assistant",
+                                                       "content": [{"type": "text", "text": answer}]}})
+    if AGENT == "claude":
+        path = os.path.join(home, ".claude", "projects", "-fake-workspace", f"{sid}.jsonl")
+    elif AGENT == "codex":
+        now = time.localtime()
+        path = os.path.join(home, ".codex", "sessions", time.strftime("%Y/%m/%d", now),
+                            f"rollout-{time.strftime('%Y-%m-%dT%H-%M-%S', now)}-{sid}.jsonl")
+        lines = [{"type": "session_meta", "payload": {"id": sid, "cwd": os.getcwd()}}] + [
+            {"type": "response_item", "payload": {"type": "message", **m["message"]}} for m in lines]
+    elif AGENT == "cursor":
+        path = os.path.join(home, ".cursor", "projects", "fake-workspace", "agent-transcripts", sid, f"{sid}.jsonl")
+    else:
+        path = os.path.join(home, ".gemini", "antigravity-cli", "conversations", f"{sid}.db")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        if AGENT == "agy":
+            f.write("SQLite format 3\0" + prompt)
+        else:
+            f.write("".join(json.dumps(x) + "\n" for x in lines))
 
 
 def parse_prompt(p):
@@ -73,16 +125,44 @@ def result(ctrl, run_id, first, extra):
     return r
 
 
+def main_live(ctrl, prompt):
+    """Interactive mode as the tests see it: do the task, write result.md + summary.md to the OUTBOX."""
+    lc = dict(ctrl, **ctrl.get("live", {}))
+    for d in lc.get("mkdir", []):
+        os.makedirs(d, exist_ok=True)
+    for p in lc.get("write", []):
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "a") as f:
+            f.write("stub edit\n")
+    run_id, first, extra = parse_prompt(prompt)
+    res = result(lc, run_id, first, extra)
+    answer = f"Done.\n```json\n{json.dumps(res)}\n```" if lc.get("session_answer") else ""
+    write_session(lc, prompt, answer)
+    if lc.get("sleep"):
+        time.sleep(lc["sleep"])
+    outbox = parse_outbox(prompt)
+    if outbox and lc.get("write_outbox", True):
+        with open(os.path.join(outbox, "result.md"), "w") as f:
+            f.write(f"# Live answer\n\n{res['report_md']}\n\n```json\n{json.dumps(res)}\n```\n")
+        with open(os.path.join(outbox, "summary.md"), "w") as f:
+            f.write("\n".join(lc.get("summary_file", res["summary"])) + "\n")
+    if lc.get("linger"):
+        time.sleep(lc["linger"])
+    sys.exit(int(lc.get("exit", 0)))
+
+
 def main():
     ctrl = control()
     prompt = get_prompt()
     calls = os.path.join(HERE, "calls")
     os.makedirs(calls, exist_ok=True)
     rec = {"agent": AGENT, "argv": sys.argv, "cwd": os.getcwd(), "env": dict(os.environ), "prompt": prompt,
-           "pid": os.getpid()}
+           "pid": os.getpid(), "live": is_live(), "isatty": sys.stdin.isatty()}
     n = len(os.listdir(calls))
     with open(os.path.join(calls, f"{n:03d}-{AGENT}.json"), "w") as f:
         json.dump(rec, f)
+    if rec["live"]:
+        main_live(ctrl, prompt)
     for d in ctrl.get("mkdir", []):
         os.makedirs(d, exist_ok=True)
     for p in ctrl.get("write", []):

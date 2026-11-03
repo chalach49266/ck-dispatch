@@ -14,6 +14,14 @@ from .guards import check_ck_argv
 from .runner import Spec, execute, new_run_id, read_task_file, review_spec, valid_run_id
 
 
+LIVE_HELP = ("run the agent in its own interactive CLI in a new Terminal window (default on, from config "
+             "live.default); --no-live: headless only. If the window fails, the run falls back to headless")
+
+
+def _live(cfg: Config, a) -> bool:
+    return cfg.live_default if a.live is None else a.live
+
+
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="ck-run", description="CK's runner for claude, codex, cursor (agent) and agy.")
     ap.add_argument("--version", action="version", version=f"ck-run {VERSION}")
@@ -34,6 +42,7 @@ def _parser() -> argparse.ArgumentParser:
     r.add_argument("--parent", help="run id this task follows up")
     r.add_argument("--lead", help="lead bot that supplied the domain context")
     r.add_argument("--dry-run", action="store_true", help="check and print the agent command; run nothing")
+    r.add_argument("--live", action=argparse.BooleanOptionalAction, default=None, help=LIVE_HELP)
     r.set_defaults(func=cmd_run)
 
     v = sub.add_parser("review", help="cross-review a finished run by another agent (sends file paths, not content)")
@@ -45,6 +54,7 @@ def _parser() -> argparse.ArgumentParser:
     v.add_argument("--model")
     v.add_argument("--timeout", type=int)
     v.add_argument("--dry-run", action="store_true")
+    v.add_argument("--live", action=argparse.BooleanOptionalAction, default=None, help=LIVE_HELP)
     v.set_defaults(func=cmd_review)
 
     t = sub.add_parser("thread", help="print the conversation chain of a run as markdown")
@@ -86,13 +96,13 @@ def cmd_run(cfg: Config, a) -> int:
     spec = Spec(agent=a.agent, ws=ws, title=title, task_text=task, task_source=os.path.abspath(os.path.expanduser(a.prompt_file)),
                 task_type=a.task_type, model=a.model, mode=a.mode, approved=a.approved, scopes_in=a.write_scope,
                 read_dirs=a.read_dir, timeout_s=a.timeout, parent_run_id=a.parent, kind="dispatch",
-                from_="CK", lead=a.lead)
+                from_="CK", lead=a.lead, live=_live(cfg, a))
     return execute(cfg, spec, dry_run=a.dry_run)
 
 
 def cmd_review(cfg: Config, a) -> int:
     spec = review_spec(cfg, a.run_id, a.by, blind=a.blind, focus=a.focus, title=a.title,
-                       model=a.model, timeout_s=a.timeout)
+                       model=a.model, timeout_s=a.timeout, live=_live(cfg, a))
     return execute(cfg, spec, dry_run=a.dry_run)
 
 

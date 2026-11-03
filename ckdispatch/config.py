@@ -95,6 +95,12 @@ class Config:
         self.max_runs_per_workspace = int(d.get("max_runs_per_workspace", 2))
         self.scan_budget_s = float(d.get("scan_budget_s", 120))
         self.scan_max_entries = int(d.get("scan_max_entries", 1000000))
+        lv = d.get("live") or {}
+        self.live_default = bool(lv.get("default", True))
+        self.live_osascript = xp(lv.get("osascript", "/usr/bin/osascript"))
+        self.live_start_timeout_s = float(lv.get("start_timeout_s", 30))
+        self.live_early_exit_s = float(lv.get("early_exit_s", 20))
+        self.live_poll_s = float(lv.get("poll_s", 1.0))
         self.workspaces = {k: Workspace(k, v) for k, v in d["workspaces"].items()}
 
     def workspace(self, name: str) -> Workspace:

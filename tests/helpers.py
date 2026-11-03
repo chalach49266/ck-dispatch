@@ -12,6 +12,7 @@ import tempfile
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 CK_RUN = os.path.join(REPO, "bin", "ck-run")
 FAKE_CLI = os.path.join(REPO, "tests", "fake_cli.py")
+FAKE_OSASCRIPT = os.path.join(REPO, "tests", "fake_osascript.py")
 REAL_CONFIG = os.path.join(REPO, "config", "workspaces.json")
 
 DEVFAB_FILES = [
@@ -71,6 +72,9 @@ class Sandbox:
         cfg["bin_dirs"] = [self.stubs, "/usr/bin", "/bin"]
         cfg["workspaces"]["devfab"]["root"] = self.devfab
         cfg["workspaces"]["nv"]["root"] = self.nv
+        # --live stays on by default; the mock osascript fails unless a test says otherwise (see window())
+        cfg["live"] = {"default": True, "osascript": os.path.join(self.stubs, "osascript"),
+                       "start_timeout_s": 3, "early_exit_s": 20, "poll_s": 0.2}
         self.config = os.path.join(self.tmp, "config.json")
         with open(self.config, "w") as f:
             json.dump(cfg, f, indent=1)
@@ -82,7 +86,28 @@ class Sandbox:
             with open(p, "w") as f:
                 f.write(f"#!{sys.executable}\n" + src)
             os.chmod(p, 0o755)
+        with open(FAKE_OSASCRIPT) as f:
+            src = f.read()
+        p = os.path.join(self.stubs, "osascript")
+        with open(p, "w") as f:
+            f.write(f"#!{sys.executable}\n" + src)
+        os.chmod(p, 0o755)
         self.control()
+
+    def window(self, mode):
+        """Mock Terminal: 'run' (window runs live.sh), 'silent' (never starts), 'fail' (osascript error)."""
+        with open(os.path.join(self.stubs, "osascript.json"), "w") as f:
+            json.dump({"mode": mode}, f)
+
+    def osascript_calls(self):
+        d = os.path.join(self.stubs, "osascript-calls")
+        if not os.path.isdir(d):
+            return []
+        out = []
+        for n in sorted(os.listdir(d)):
+            with open(os.path.join(d, n)) as f:
+                out.append(json.load(f))
+        return out
 
     def env(self, **extra):
         e = {"HOME": self.home, "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "en_US.UTF-8",

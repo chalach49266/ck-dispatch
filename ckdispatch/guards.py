@@ -41,8 +41,10 @@ MODE_VALUES = {
     "--mode": {"plan", "ask", "accept-edits"},
     "-s": {"read-only", "workspace-write"},
     "--sandbox": {"read-only", "workspace-write", "enabled"},
-    "-a": set(),
-    "--ask-for-approval": set(),
+    # codex approvals: only "on-request" (the model must ask the user). Needed for --live, because the
+    # user's ~/.codex/config.toml sets approval_policy = "never". "never" stays refused.
+    "-a": {"on-request"},
+    "--ask-for-approval": {"on-request"},
     "--approval-mode": set(),
     "--approval-policy": set(),
 }

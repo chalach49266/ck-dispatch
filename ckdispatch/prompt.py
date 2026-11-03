@@ -10,21 +10,29 @@ SUMMARY_MAX_CHARS = 200
 
 
 def header(*, ws: Workspace, run_id: str, agent: str, kind: str, mode: str,
-           approved: str | None, scopes: list) -> str:
+           approved: str | None, scopes: list, live_outbox: str | None = None) -> str:
     rules = ", ".join(ws.rule_files)
     first = ", ".join(ws.wiki_first)
+    if live_outbox:
+        role = (f'ROLE: You are a worker for CK on chalach\'s PhD workspace "{ws.name}" ({ws.root}), in an '
+                "interactive terminal session that the user is watching.")
+        outputs = f"result.md and summary.md in {live_outbox} (see OUTPUT CONTRACT)"
+    else:
+        role = f'ROLE: You are a headless worker for CK on chalach\'s PhD workspace "{ws.name}" ({ws.root}).'
     L = [
-        f'ROLE: You are a headless worker for CK on chalach\'s PhD workspace "{ws.name}" ({ws.root}).',
+        role,
         f"RUN: {run_id} | agent: {agent} | kind: {kind}",
         f"FIRST: read {first}, then the rule files {rules}, and follow them."
         + (f" Check {ws.open_questions} before calling anything validated." if ws.open_questions else ""),
     ]
     if mode == "read":
-        L.append("MODE: read-only. Do not create, change, move or delete any file anywhere.")
+        L.append("MODE: read-only. Do not create, change, move or delete any file anywhere"
+                 + (f", except the two output files {outputs}." if live_outbox else "."))
     else:
         where = "; ".join(s["path"] for s in scopes)
         L.append(f'MODE: edit, approved by the user ("{approved}"). Change files ONLY inside: {where}. '
-                 "Do not write anywhere else.")
+                 + (f"Also write the two output files {outputs}. Do not write anywhere else."
+                    if live_outbox else "Do not write anywhere else."))
     raw = ", ".join(f"{e.rel}/" for e in ws.raw)
     if ws.writable_only:
         own = ", ".join(f"{e.rel}/" for e in ws.writable_only)
@@ -42,17 +50,31 @@ def header(*, ws: Workspace, run_id: str, agent: str, kind: str, mode: str,
     return "\n".join(L)
 
 
-def footer(*, run_id: str, include_schema: bool, schema_path: str) -> str:
+def footer(*, run_id: str, include_schema: bool, schema_path: str, live_outbox: str | None = None) -> str:
     L = ["OUTPUT CONTRACT (required):"]
-    if include_schema:
+    if live_outbox:
+        include_schema = True  # interactive mode has no schema flag
+        L += [
+            "LIVE RUN: ck-run cannot read your replies in this session. It reads two files in your run folder.",
+            f"OUTBOX: {live_outbox}",
+            "When you are finished:",
+            f"1. Write {live_outbox}/result.md: your full answer in Markdown, ending with ONE JSON object that "
+            "matches the schema below, in a ```json fenced block, with nothing after it.",
+            f"2. Then write {live_outbox}/summary.md: only the summary lines of that JSON, one per line "
+            f"(1 to {SUMMARY_MAX_LINES} lines). Write it LAST: ck-run takes this file as the sign that you are done.",
+            "If your mode does not let you write these two files, ask the user to approve these two writes and "
+            "nothing else. If you cannot write them at all, put the JSON in your final message. Then stop and wait.",
+        ]
+    elif include_schema:
         L.append("Finish with ONE JSON object that matches the schema below, in a ```json fenced block, "
                  "with nothing after it.")
     else:
         L.append("Your final answer must be ONE JSON object that matches the result schema ck-run gave your CLI.")
+    saved = ("they also go in summary.md" if live_outbox else "ck-run saves them as summary.md")
     L += [
         f'- "run_id": "{run_id}". "status": ok, partial, blocked or failed.',
         f'- "summary": 1 to {SUMMARY_MAX_LINES} short lines (an array of strings, each under 160 characters). '
-        "ck-run saves them as summary.md, and CK reads only that file first, so each line must stand alone: "
+        f"{saved}, and CK reads only that file first, so each line must stand alone: "
         "the outcome, the key evidence paths, blockers, and approvals needed.",
         '- "report_md": your full answer in Markdown (it can be long).',
         '- "files_read": absolute paths of every file you opened. "files_changed": every file you changed '
