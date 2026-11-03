@@ -45,7 +45,7 @@ CONTROL_FILES = ("task.md", "prompt.md", "prompt-live.md", "packet.json", "cmd.t
                  "result.json", "rulecheck.json", "stdout.log", "stderr.log", "last.md")
 
 # argv after the script lines: <command> <title> <profile>. Neither script activates the app: a window that
-# takes keyboard focus would receive whatever the user is typing at that moment.
+# takes keyboard focus would receive whatever the user is typing at that moment. Both print "<window id>|<how>".
 APPLESCRIPT = [
     "on run argv",
     'tell application "Terminal"',
@@ -57,7 +57,7 @@ APPLESCRIPT = [
     "try",
     "set wid to (id of (first window whose selected tab is t)) as text",
     "end try",
-    'return wid & tab & "Terminal do script"',
+    'return wid & "|" & "Terminal do script"',
     "end tell",
     "end run",
 ]
@@ -79,7 +79,7 @@ ITERM_APPLESCRIPT = [
     "try",
     "tell current session of w to set name to ttl",
     "end try",
-    "return ((id of w) as text) & tab & how",
+    'return ((id of w) as text) & "|" & how',  # not `tab`: inside a tell block that names the app's tab class
     "end tell",
     "end run",
 ]
@@ -215,7 +215,7 @@ def open_window(osascript: str, command: str, title: str, env: dict, terminal: s
     for name, script, prof in tries:
         ok, text, err = _osa(osascript, script, [command, title, prof], env)
         if ok:
-            wid, _, how = text.strip().partition("\t")
+            wid, _, how = text.strip().partition("|")
             out.update(ok=True, terminal=name, window_id=wid.strip() or None, how=how.strip() or None,
                        error=("; ".join(errors) or None))
             return out

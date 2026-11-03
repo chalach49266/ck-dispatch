@@ -473,6 +473,14 @@ class TestLiveWindowIdentity(LiveBase):
         self.assertIn("iTerm2: osascript exit 1", fb["note"])
         self.assertIn("Terminal: osascript exit 1", fb["note"])
 
+    def test_scripts_return_id_and_how_without_the_tab_keyword(self):
+        # 2026-11-03 smoke: inside `tell application "iTerm"`, `tab` is iTerm's tab class, so the old
+        # `id & tab & how` gave "158679tabprofile CK Live claude" as the window id.
+        for script in (live.ITERM_APPLESCRIPT, live.APPLESCRIPT):
+            text = "\n".join(script)
+            self.assertNotIn("& tab &", text)
+            self.assertIn('& "|" &', text)
+
     def test_launcher_holds_the_window_only_in_a_real_terminal(self):
         text = live.script_text(run_dir="/r", cwd="/w", env={"PATH": "/p"}, argv=["/bin/agent", PROMPT],
                                 prompt_path="/r/p.md", title="CK · cursor · t · 1-a", agent="cursor")
