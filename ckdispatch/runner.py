@@ -48,7 +48,7 @@ class Spec:
         self.from_ = kw.get("from_") or "CK"
         self.review = kw.get("review")  # dict for reviews
         self.lead = kw.get("lead")
-        self.live = bool(kw.get("live"))  # agent in its own interactive CLI, in a Terminal window
+        self.live = bool(kw.get("live"))  # agent in its own interactive CLI, in an iTerm2/Terminal window
         self.run_id = ""
 
 
@@ -375,22 +375,49 @@ def _write_replace(path: str, text: str) -> None:
     os.replace(tmp, path)
 
 
-def _live_phase(cfg, spec, ws, run_dir, paths, lv, env):
-    """Run the agent in a Terminal window. Returns (info, outcome); outcome None = fall back to headless."""
+def _live_fallback(cfg, spec, base, info, reason: str) -> None:
+    """The window did not run the agent: say so loudly, log it, and let the caller run headless."""
+    info["window_error"] = reason
+    ledger.append(cfg.runs_dir, **base, event="live_fallback", status="fallback", note=f"running headless: {reason}"[:1000],
+                  **{"from": "CK", "to": spec.agent})
+    print(f"ck-run: LIVE WINDOW FAILED for {spec.agent} (run {spec.run_id}): {reason}\n"
+          f"ck-run: running the same task headless instead (ledger event live_fallback).", file=sys.stderr)
+    sys.stderr.flush()
+
+
+def _live_phase(cfg, spec, ws, run_dir, paths, lv, env, base=None):
+    """Run the agent in an iTerm2/Terminal window. Returns (info, outcome); outcome None = fall back to headless."""
+    base = base or {}
     info = {"requested": True, "used": False, "window_error": None, "state": None, "session_id": None,
-            "session_path": None, "session_how": None, "recovered_from_session": False, "summary_text": ""}
-    title = f"ck-run {spec.agent} · {ws.name} · {spec.run_id}"
+            "session_path": None, "session_how": None, "recovered_from_session": False, "summary_text": "",
+            "window": None}
+    title = live.window_title(spec.agent, spec.title, spec.run_id)
     live.write_script(paths["live_sh"], run_dir=run_dir, cwd=lv["cmd"].cwd, env=env, argv=lv["cmd"].argv,
-                      prompt_path=paths["prompt_live"], title=title)
+                      prompt_path=paths["prompt_live"], title=title, agent=spec.agent)
+    profile = ""
+    if cfg.live_terminal.lower() in ("iterm", "iterm2"):
+        _, new_file, perr = live.ensure_iterm_profiles(cfg.home)
+        profile = "" if perr else live.profile_name(spec.agent)
+        if new_file:
+            time.sleep(1.5)  # iTerm2 loads a new dynamic-profile file within about a second
     t0 = time.time()
-    ok, err = live.open_window(cfg.live_osascript, f"/bin/bash {shlex.quote(paths['live_sh'])}", title, env,
-                               terminal=cfg.live_terminal)
-    if not ok:
+    win = live.open_window(cfg.live_osascript, f"/bin/bash {shlex.quote(paths['live_sh'])}", title, env,
+                           terminal=cfg.live_terminal, profile=profile)
+    info["window"] = {"terminal": win["terminal"], "window_id": win["window_id"], "how": win["how"], "title": title}
+    if not win["ok"]:
         live.take_claim(run_dir)  # a window that opens anyway later finds the claim and does nothing
-        info["window_error"] = err
+        _live_fallback(cfg, spec, base, info, f"osascript could not open a window: {win['error']}")
         return info, None
+    locked = bool(profile) and (win["how"] or "").startswith("profile ")
+    ledger.append(cfg.runs_dir, **base, event="live_window_opened", status="dispatched",
+                  note=(f"window_id={win['window_id'] or 'unknown'}; terminal={win['terminal']}; {win['how']}; "
+                        f"title locked: {'yes' if locked else 'no'}; title: {title}")[:1000],
+                  **{"from": "CK", "to": spec.agent})
     if not live.wait_started(run_dir, cfg.live_start_timeout_s, min(cfg.live_poll_s, 0.5)):
-        info["window_error"] = f"the Terminal window did not start the agent within {cfg.live_start_timeout_s:g} s"
+        tail = live.window_tail(cfg.live_osascript, win["window_id"], env) if win["terminal"] == "iTerm2" else None
+        _live_fallback(cfg, spec, base, info,
+                       f"the {win['terminal']} window (id {win['window_id'] or 'unknown'}) did not start the agent "
+                       f"within {cfg.live_start_timeout_s:g} s" + (f"; the window shows: {tail}" if tail else ""))
         return info, None
     info["used"] = True
     old = signal.signal(signal.SIGTERM, _on_sigterm)
@@ -407,8 +434,8 @@ def _live_phase(cfg, spec, ws, run_dir, paths, lv, env):
     if (w["state"] == "exited" and w["exit_code"] not in (None, 0, 130) and not result_text
             and time.time() - t0 < cfg.live_early_exit_s):
         info["used"] = False
-        info["window_error"] = (f"the agent CLI exited with code {w['exit_code']} in the window after "
-                                f"{time.time() - t0:.0f} s, before writing anything")
+        _live_fallback(cfg, spec, base, info, f"the agent CLI exited with code {w['exit_code']} in the window after "
+                                              f"{time.time() - t0:.0f} s, before writing anything")
         return info, None
     info["summary_text"] = _read_text(paths["summary"], 200_000)
     sess = live.find_session(spec.agent, cfg.home, t0 - 5, spec.run_id, known_id=lv["session_id"])
@@ -465,14 +492,14 @@ def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, 
     ledger.append(cfg.runs_dir, **base, event=spec.kind, status="dispatched",
                   prompt_path=paths["prompt_live"] if lv else paths["prompt"], response_path=paths["result_md"],
                   summary_path=paths["summary"], write_scope=packet["write_scope"], started_at=started,
-                  note="live: interactive CLI in a Terminal window (headless if the window fails)" if lv else None,
+                  note=f"live: interactive CLI in an {cfg.live_terminal} window (headless if the window fails)" if lv else None,
                   **{"from": spec.from_, "to": spec.agent})
 
     marker_ns = rulecheck.touch_marker(paths["marker"])
     t0 = time.time()
     live_info, outcome = (None, None)
     if lv:
-        live_info, outcome = _live_phase(cfg, spec, ws, run_dir, paths, lv, env)
+        live_info, outcome = _live_phase(cfg, spec, ws, run_dir, paths, lv, env, base)
     if outcome is None:
         exit_code, timed_out, interrupted = run_child(cmd, prompt_text, env, run_dir, int(spec.timeout_s))
         parsed = summarize.parse(spec.agent, run_dir)
@@ -505,7 +532,7 @@ def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, 
     if live_info and not is_live:
         notes.append(f"live window not used ({live_info['window_error']}); ran headless")
     if is_live:
-        notes.append(f"live: ran in a Terminal window; state {live_info['state']}; session "
+        notes.append(f"live: ran in a {(live_info.get('window') or {}).get('terminal') or 'terminal'} window; state {live_info['state']}; session "
                      f"{live_info['session_id'] or 'unknown'} ({live_info['session_how']})")
         if live_info["recovered_from_session"]:
             notes.append("result recovered from the session log: the agent did not write it to result.md")

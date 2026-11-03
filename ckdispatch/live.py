@@ -1,19 +1,32 @@
-"""--live: the agent works in its own interactive CLI (TUI) in a new macOS Terminal window.
+"""--live: the agent works in its own interactive CLI (TUI) in a new iTerm2 (or Terminal) window.
 
 Flow (runner._live_phase):
-  1. ck-run writes <run>/live.sh and asks Terminal (osascript) to open a window that runs it.
+  1. ck-run writes <run>/live.sh and asks iTerm2 (osascript) for a new window whose session RUNS live.sh as
+     its command. Nothing is typed into a shell and iTerm2 is not activated, so keystrokes the user types
+     elsewhere cannot land in front of the command (2026-11-03 bug: the old `write text` + `activate` turned
+     the line into `is /bin/bash .../live.sh` -> "zsh: command not found: is", the window never started the
+     agent and the run silently went headless). The window id goes to the ledger (live_window_opened).
   2. live.sh claims the run (<run>/live.claim, created with noclobber), records its pid, cd's to the
      agent's folder and starts the agent CLI with `env -i` (the same allowlisted env as a headless run)
-     and the live prompt as the first message. When the agent exits it writes <run>/live.exit.
+     and the live prompt as the first message. When the agent exits it writes <run>/live.exit, then (in a
+     real terminal only) leaves a login shell in the window.
   3. ck-run waits for <run>/summary.md (the agent writes it last), the agent's exit, or the timeout.
-  4. No claim within start_timeout_s: ck-run takes the claim itself (so a late window does nothing) and
-     falls back to the headless run. The same happens when osascript fails.
+  4. No claim within start_timeout_s: ck-run takes the claim itself (so a late window does nothing), reads
+     the last lines of the window, logs the reason (stderr + ledger event live_fallback) and falls back to
+     the headless run. The same happens when osascript fails.
+
+Window identity (iTerm2): the session name is "CK · <agent> · <title> · <time-hex>". Each agent gets a
+dynamic profile "CK Live <agent>" (~/Library/Application Support/iTerm2/DynamicProfiles/ck-run-live.json)
+with its own tab color and badge and "Allow Title Setting" off, so the agent's TUI cannot overwrite the
+title. If iTerm2 has not loaded the profile yet, the default profile is used and the title is not locked
+(live.sh still sets the badge and tab color with iTerm2 escape codes).
 
 Interactive mode has no result JSON on stdout, so the prompt asks the agent to write result.md and
 summary.md into the run folder. Session ids come from each CLI's own session store.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -31,60 +44,152 @@ CONTROL_FILES = ("task.md", "prompt.md", "prompt-live.md", "packet.json", "cmd.t
                  "claude-settings-live.json", "live.sh", ".marker", "live.claim", "live.pid", "live.exit",
                  "result.json", "rulecheck.json", "stdout.log", "stderr.log", "last.md")
 
+# argv after the script lines: <command> <title> <profile>. Neither script activates the app: a window that
+# takes keyboard focus would receive whatever the user is typing at that moment.
 APPLESCRIPT = [
     "on run argv",
     'tell application "Terminal"',
-    "activate",
     "set t to do script (item 1 of argv)",
     "try",
     "set custom title of t to (item 2 of argv)",
     "end try",
+    'set wid to ""',
+    "try",
+    "set wid to (id of (first window whose selected tab is t)) as text",
+    "end try",
+    'return wid & tab & "Terminal do script"',
     "end tell",
     "end run",
 ]
 
 ITERM_APPLESCRIPT = [
     "on run argv",
+    "set cmd to item 1 of argv",
+    "set ttl to item 2 of argv",
+    "set prof to item 3 of argv",
     'tell application "iTerm"',
-    "activate",
-    "set w to (create window with default profile)",
-    "tell current session of w",
+    'set how to "profile " & prof',
     "try",
-    "set name to (item 2 of argv)",
+    'if prof is "" then error "no ck-run profile"',
+    "set w to (create window with profile prof command cmd)",
+    "on error errMsg",
+    'set how to "default profile (" & errMsg & ")"',
+    "set w to (create window with default profile command cmd)",
     "end try",
-    "write text (item 1 of argv)",
-    "end tell",
+    "try",
+    "tell current session of w to set name to ttl",
+    "end try",
+    "return ((id of w) as text) & tab & how",
     "end tell",
     "end run",
 ]
+
+ITERM_TAIL_APPLESCRIPT = [
+    "on run argv",
+    'tell application "iTerm"',
+    "return contents of current session of (first window whose id is ((item 1 of argv) as integer))",
+    "end tell",
+    "end run",
+]
+
+# Tab colors (sRGB 0-255) and badges per agent, for telling the windows apart at a glance.
+AGENT_COLORS = {"claude": (217, 119, 87), "codex": (16, 163, 127), "cursor": (59, 130, 246), "agy": (147, 51, 234)}
+PROFILE_FILE = ("Library", "Application Support", "iTerm2", "DynamicProfiles", "ck-run-live.json")
+
+
+def profile_name(agent: str) -> str:
+    return f"CK Live {agent}"
+
+
+def window_title(agent: str, title: str, run_id: str, max_title: int = 60) -> str:
+    """'CK · <agent> · <title> · <HHMMSS-hex>' (the run id's time and random suffix)."""
+    t = " ".join(str(title).split())
+    if len(t) > max_title:
+        t = t[:max_title - 1].rstrip() + "…"
+    parts = run_id.split("-")
+    short = f"{parts[2].split('T')[-1]}-{parts[-1]}" if len(parts) >= 5 and "T" in parts[2] else run_id
+    return f"CK · {agent} · {t} · {short}"
+
+
+def iterm_profiles() -> dict:
+    out = []
+    for agent, (r, g, b) in AGENT_COLORS.items():
+        out.append({
+            "Name": profile_name(agent),
+            "Guid": f"ck-run-live-{agent}",
+            "Allow Title Setting": False,   # the agent's TUI may not change the title
+            "Title Components": 1,          # title = session name only (set by ck-run)
+            "Badge Text": f"CK {agent}",
+            "Use Tab Color": True,
+            "Tab Color": {"Red Component": r / 255, "Green Component": g / 255, "Blue Component": b / 255,
+                          "Alpha Component": 1, "Color Space": "sRGB"},
+        })
+    return {"Profiles": out}
+
+
+def ensure_iterm_profiles(home: str) -> tuple:
+    """(path, changed, error). Writes the ck-run dynamic profiles if missing or different. Never raises."""
+    path = os.path.join(home, *PROFILE_FILE)
+    text = json.dumps(iterm_profiles(), indent=1) + "\n"
+    try:
+        with open(path, encoding="utf-8") as f:
+            if f.read() == text:
+                return path, False, None
+    except OSError:
+        pass
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".ck-tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+        return path, True, None
+    except OSError as e:
+        return path, False, f"could not write {path}: {e}"
+
 
 UUID_RX = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 READ_CAP = 32 * 1024 * 1024
 
 
-def script_text(*, run_dir: str, cwd: str, env: dict, argv: list, prompt_path: str, title: str) -> str:
-    """Bash launcher for the Terminal window. The prompt is read from a file, never pasted in the window."""
+def script_text(*, run_dir: str, cwd: str, env: dict, argv: list, prompt_path: str, title: str,
+                agent: str = "") -> str:
+    """Bash launcher that the window runs as its command. The prompt is read from a file, never typed."""
     q = shlex.quote
     env_parts = [f"{k}={q(v)}" for k, v in sorted(env.items()) if k not in ("TERM", "NO_COLOR")]
     env_parts.append('TERM="${TERM:-xterm-256color}"')  # the window's terminal type; colours stay on
     if "LANG" not in env:
         env_parts.append("LANG=en_US.UTF-8")
-    agent = " ".join(f'"$(cat {q(prompt_path)})"' if a is PROMPT else q(str(a)) for a in argv)
+    agent_cmd = " ".join(f'"$(cat {q(prompt_path)})"' if a is PROMPT else q(str(a)) for a in argv)
+    # A real terminal keeps a login shell in the window afterwards (iTerm2 would otherwise close it).
+    hold = 'if [ -t 0 ] && [ -t 1 ]; then exec "${SHELL:-/bin/zsh}" -l; fi'
+    iterm = []
+    if agent in AGENT_COLORS:  # badge + tab color by escape code, also when the ck-run profile is not loaded
+        r, g, b = AGENT_COLORS[agent]
+        badge = base64.b64encode(f"CK {agent}".encode()).decode()
+        iterm = ['if [ "$TERM_PROGRAM" = "iTerm.app" ]; then',
+                 f"  printf '\\033]1337;SetBadgeFormat=%s\\007' {q(badge)}",
+                 f"  printf '\\033]6;1;bg;red;brightness;{r}\\007\\033]6;1;bg;green;brightness;{g}\\007"
+                 f"\\033]6;1;bg;blue;brightness;{b}\\007'",
+                 "fi"]
     return "\n".join([
         "#!/bin/bash",
-        "# ck-run --live launcher: Terminal runs this; it starts the agent's interactive CLI.",
+        "# ck-run --live launcher: the iTerm2/Terminal window runs this; it starts the agent's interactive CLI.",
         f"RUN={q(run_dir)}",
         'if ! (set -C; : > "$RUN/live.claim") 2>/dev/null; then',
         '  echo "ck-run: this run was already started, or ck-run fell back to a headless run. Nothing to do."',
+        f"  {hold}",
         "  exit 0",
         "fi",
         'echo $$ > "$RUN/live.pid.tmp" && mv "$RUN/live.pid.tmp" "$RUN/live.pid"',
         f'cd {q(cwd)} || {{ echo 127 > "$RUN/live.exit"; exit 1; }}',
         f"printf '\\033]0;%s\\007' {q(title)}",
+        *iterm,
         f"echo {q('ck-run live: ' + title)}",
-        f"/usr/bin/env -i {' '.join(env_parts)} {agent}",
+        f"/usr/bin/env -i {' '.join(env_parts)} {agent_cmd}",
         'rc=$?; echo $rc > "$RUN/live.exit.tmp" && mv "$RUN/live.exit.tmp" "$RUN/live.exit"',
         'echo "ck-run: the agent exited (code $rc). This window can be closed."',
+        hold,
         "",
     ])
 
@@ -95,32 +200,54 @@ def write_script(path: str, **kw) -> None:
         f.write(script_text(**kw))
 
 
-def open_window(osascript: str, command: str, title: str, env: dict, terminal: str = "Terminal") -> tuple:
-    """(ok, error). Asks iTerm2 (terminal="iTerm2") or Terminal for a new window that runs `command`.
-    If iTerm2 fails, Terminal is tried once before giving up."""
+def open_window(osascript: str, command: str, title: str, env: dict, terminal: str = "Terminal",
+                profile: str = "") -> dict:
+    """Ask iTerm2 (terminal="iTerm2") or Terminal for a new window that runs `command` as its program.
+    If iTerm2 fails, Terminal is tried once before giving up.
+    Returns {ok, error, window_id, terminal, how}."""
+    out = {"ok": False, "error": None, "window_id": None, "terminal": None, "how": None}
     if not (os.path.isfile(osascript) and os.access(osascript, os.X_OK)):
-        return False, f"osascript not found: {osascript}"
-    if terminal.lower() in ("iterm", "iterm2"):
-        ok, err = _osa(osascript, ITERM_APPLESCRIPT, command, title, env)
+        out["error"] = f"osascript not found: {osascript}"
+        return out
+    tries = [("iTerm2", ITERM_APPLESCRIPT, profile or "")] if terminal.lower() in ("iterm", "iterm2") else []
+    tries.append(("Terminal", APPLESCRIPT, ""))
+    errors = []
+    for name, script, prof in tries:
+        ok, text, err = _osa(osascript, script, [command, title, prof], env)
         if ok:
-            return ok, err
-        ok2, err2 = _osa(osascript, APPLESCRIPT, command, title, env)
-        return ok2, (None if ok2 else f"iTerm2: {err}; Terminal: {err2}")
-    return _osa(osascript, APPLESCRIPT, command, title, env)
+            wid, _, how = text.strip().partition("\t")
+            out.update(ok=True, terminal=name, window_id=wid.strip() or None, how=how.strip() or None,
+                       error=("; ".join(errors) or None))
+            return out
+        errors.append(f"{name}: {err}")
+    out["error"] = "; ".join(errors)
+    return out
 
 
-def _osa(osascript: str, script: list, command: str, title: str, env: dict) -> tuple:
+def window_tail(osascript: str, window_id, env: dict, lines: int = 6) -> str | None:
+    """The last non-empty lines shown in an iTerm2 window (to explain a window that did not start)."""
+    if not window_id or not str(window_id).isdigit():
+        return None
+    ok, text, _ = _osa(osascript, ITERM_TAIL_APPLESCRIPT, [str(window_id)], env, timeout=20)
+    if not ok:
+        return None
+    rows = [r.rstrip() for r in text.splitlines() if r.strip()]
+    return " | ".join(rows[-lines:])[-600:] or None
+
+
+def _osa(osascript: str, script: list, args: list, env: dict, timeout: int = 60) -> tuple:
+    """(ok, stdout, error)."""
     argv = [osascript]
     for line in script:
         argv += ["-e", line]
-    argv += [command, title]
+    argv += list(args)
     try:
-        p = subprocess.run(argv, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        p = subprocess.run(argv, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as e:
-        return False, f"osascript: {e}"
+        return False, "", f"osascript: {e}"
     if p.returncode != 0:
-        return False, f"osascript exit {p.returncode}: {(p.stderr or p.stdout).strip()[:300]}"
-    return True, None
+        return False, p.stdout or "", f"osascript exit {p.returncode}: {(p.stderr or p.stdout).strip()[:300]}"
+    return True, p.stdout or "", None
 
 
 def take_claim(run_dir: str) -> bool:

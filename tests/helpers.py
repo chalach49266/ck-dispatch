@@ -111,10 +111,11 @@ class Sandbox:
         os.chmod(p, 0o755)
         self.control()
 
-    def window(self, mode):
-        """Mock Terminal: 'run' (window runs live.sh), 'silent' (never starts), 'fail' (osascript error)."""
+    def window(self, mode, **extra):
+        """Mock Terminal: 'run' (window runs live.sh), 'silent' (never starts), 'fail' (osascript error).
+        extra: window_id, tail (window contents), profile_loaded (False = iTerm2 used the default profile)."""
         with open(os.path.join(self.stubs, "osascript.json"), "w") as f:
-            json.dump({"mode": mode}, f)
+            json.dump({"mode": mode, **extra}, f)
 
     def set_live(self, **kw):
         """Change the test config's live section, e.g. set_live(terminal="iTerm2")."""

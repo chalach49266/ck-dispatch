@@ -8,7 +8,7 @@ Status: **step 1 of the plan** (`~/.claude/plans/read-only-planning-task-do-cosm
 tested offline with stub CLIs. **Step 3** (2026-11-02): live read-only probes of claude, cursor and agy with
 ck-run's own argv and env; results, session ids and resume commands in `docs/step3/results.md`. Codex was
 not run live (the `merge-gate` mod in Claude Code denies `codex exec`). **Live view** (2026-11-02): `--live`
-(default on) runs each agent in its own interactive CLI in a new Terminal window; see "Live mode" below.
+(default on) runs each agent in its own interactive CLI in a new iTerm2 window; see "Live mode" below.
 
 ## Commands
 
@@ -90,11 +90,28 @@ can never pass them itself (`check_ck_argv` still refuses `--auto-review`, `--pe
 
 ## Live mode (`--live`, default on; `--no-live` = headless only)
 
-`run` and `review` open a new macOS Terminal window (`osascript` → `tell application "Terminal" to do script`)
-that runs `<run>/live.sh`. The script `cd`s to the agent's folder (the workspace, or the first write scope in
-edit mode) and starts the agent's **own interactive CLI** with `/usr/bin/env -i` (the same allowlisted env as
-headless, minus `NO_COLOR`, with `TERM` from the window) and `<run>/prompt-live.md` as the first message.
-The default comes from `live.default` in `config/workspaces.json`.
+`run` and `review` open a new iTerm2 window (`live.terminal`; `osascript` → `create window with profile
+"CK Live <agent>" command "/bin/bash <run>/live.sh"`; Terminal's `do script` if iTerm2 fails) whose session
+**runs** `<run>/live.sh` as its program. The script `cd`s to the agent's folder (the workspace, or the first
+write scope) and starts the agent's **own interactive CLI** with `/usr/bin/env -i` (the same allowlisted env as
+headless, minus `NO_COLOR`, with `TERM` from the window) and `<run>/prompt-live.md` as the first message. When
+the agent exits, the window keeps a login shell. The default comes from `live.default` in `config/workspaces.json`.
+
+**Live fix (2026-11-03).** Until then ck-run activated iTerm2 and *typed* `/bin/bash <run>/live.sh` into a new
+shell (`write text`). The new window took keyboard focus, so whatever chalach was typing elsewhere landed in
+front of the command (`is /bin/bash …` → `zsh: command not found: is`); live.sh never ran, and after 30 s the
+run went headless with only a note. Seen for codex, cursor and agy. Now nothing is typed and no app is
+activated, and every fallback is loud (see below).
+
+- **Window name**: `CK · <agent> · <title> · <HHMMSS-hex of the run id>`, set as the iTerm2 session name.
+- **Per-agent iTerm2 profile**: ck-run keeps `~/Library/Application Support/iTerm2/DynamicProfiles/ck-run-live.json`
+  with one profile per agent (`CK Live claude|codex|cursor|agy`): its own tab color and badge, title = session
+  name, and **"Allow Title Setting" off, so the agent's TUI cannot overwrite the title**. Everything else
+  comes from your default profile. If iTerm2 has not loaded the profile yet, ck-run uses the default profile
+  (title not locked; live.sh still sets the badge and tab color with iTerm2 escape codes).
+- **Ledger**: `live_window_opened` (note: `window_id=<iTerm2 window id>`, terminal, profile, whether the title is
+  locked, the title) and, if the window does not run the agent, `live_fallback` (status `fallback`, note: the
+  reason, with the last lines the window shows). ck-run also prints `LIVE WINDOW FAILED ...` on stderr.
 
 | Agent | Interactive argv (same permission flags as headless) | Initial prompt (from `--help`) |
 |---|---|---|
@@ -124,10 +141,11 @@ The default comes from `live.default` in `config/workspaces.json`.
   `~/.gemini/antigravity-cli/conversations/<id>.db` that contains the run id. Saved in `result.json`.
 - **Timeout**: at `--timeout` ck-run stops the agent in the window (SIGTERM then SIGKILL to the `live.sh`
   process group) and the status is `timeout`. Quitting the agent without writing anything gives `failed`.
-- **Fallback to headless** (same run folder, `prompt.md`, note in the result): `osascript` fails (for example
-  macOS has not allowed the caller to control Terminal), the window does not start the agent within
-  `live.start_timeout_s` (30 s; ck-run then takes `<run>/live.claim`, so a late window does nothing), or the
-  agent CLI exits with an error code within `live.early_exit_s` (20 s) without writing anything.
+- **Fallback to headless** (same run folder, `prompt.md`, note in the result, ledger `live_fallback`, stderr
+  `LIVE WINDOW FAILED`): `osascript` fails (for example macOS has not allowed the caller to control iTerm2 or
+  Terminal), the window does not start the agent within `live.start_timeout_s` (30 s; ck-run then takes
+  `<run>/live.claim`, so a late window does nothing, and quotes what the window shows), or the agent CLI exits
+  with an error code within `live.early_exit_s` (20 s) without writing anything.
 
 ## Edit mode: write-scope rules
 
@@ -244,7 +262,10 @@ keeps each agent's permission flags (codex `-a on-request`, `-a never` refused);
 claim); live Claude deny rules; each agent end to end in a mocked window (summary.md → ledger `ok`, session
 id found); Ctrl+C after summary.md is still ok; 10-line cut; rule check in live mode; answer recovered from the session log; timeout stops the
 agent; review runs live; fallback on osascript error, on a window that never starts, and on an early error
-exit; a late window does nothing; `--no-live`; `--dry-run` shows both commands.
+exit; a late window does nothing; `--no-live`; `--dry-run` shows both commands. Window identity (2026-11-03):
+the title format; iTerm2 runs live.sh as the session command (no `write text`, no `activate`) with the agent's
+profile; the dynamic profiles (title locked, 4 tab colors); default-profile case; `live_window_opened` and
+`live_fallback` ledger events with the window id, the reason and the window's last lines; iTerm2 → Terminal → headless.
 
 ## Step 3 live checks (2026-11-02; claude 2.1.316, codex-cli 0.166.0, agent 2026.10.22, agy 1.4.12)
 
@@ -297,7 +318,7 @@ ckdispatch/cli.py           commands
 ckdispatch/runner.py        one run: guards, run folder, child, parse, rulecheck, ledger, stdout
 ckdispatch/guards.py        forbidden flags, write scopes, env allowlist (code, not config)
 ckdispatch/flags.py         per-agent argv map (headless build, interactive build_live)
-ckdispatch/live.py          --live: Terminal window, live.sh launcher, wait, stop, session stores
+ckdispatch/live.py          --live: iTerm2/Terminal window, profiles, live.sh launcher, wait, stop, session stores
 ckdispatch/prompt.py        rules header, output contract, review task
 ckdispatch/summarize.py     output parsers, summary, UNVERIFIED tags, result.md
 ckdispatch/rulecheck.py     disk scan + transcript scan

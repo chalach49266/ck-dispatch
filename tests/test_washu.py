@@ -227,8 +227,8 @@ class TestWashuRuns(unittest.TestCase):
                 rd = os.path.join(self.sb.runs, self.sb.run_id_from(p))
                 osa = self.sb.osascript_calls()[-1]["argv"]
                 self.assertIn('tell application "iTerm"', osa)
-                self.assertEqual(osa[-2], "/bin/bash " + shlex.quote(os.path.join(rd, "live.sh")))
-                self.assertIn("WashU HW", osa[-1])  # window title
+                self.assertEqual(osa[-3], "/bin/bash " + shlex.quote(os.path.join(rd, "live.sh")))
+                self.assertTrue(osa[-2].startswith(f"CK · {agent} · Test task · "), osa[-2])  # window title
                 with open(os.path.join(rd, "live.sh")) as f:
                     self.assertIn(f"cd {shlex.quote(cwd)} ||", f.read())
                 call = self.sb.calls()[-1]

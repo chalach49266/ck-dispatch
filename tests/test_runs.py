@@ -51,10 +51,12 @@ class TestReadRuns(Base):
         p = self.sb.run("codex")
         self.assertEqual(p.returncode, 0, p.stderr)
         evs = self.sb.ledger()
-        self.assertEqual([e["event"] for e in evs], ["dispatch", "result"])
+        # live is on by default and the mock osascript fails, so the run logs its fallback to headless
+        self.assertEqual([e["event"] for e in evs], ["dispatch", "live_fallback", "result"])
         for e in evs:
             self.assertTrue(LEDGER_KEYS <= set(e), LEDGER_KEYS - set(e))
-        d, r = evs
+        d, fb, r = evs
+        self.assertEqual((fb["from"], fb["to"], fb["status"]), ("CK", "codex", "fallback"))
         self.assertEqual((d["from"], d["to"], d["status"]), ("CK", "codex", "dispatched"))
         self.assertEqual((r["from"], r["to"], r["status"]), ("codex", "CK", "ok"))
         self.assertIsNone(r["accepted"])
@@ -365,7 +367,7 @@ class TestReviewAndThread(Base):
         self.assertNotIn("UNIQUE-RESULT-MARKER-7f3a", call["prompt"])
         self.assertIn(["-s", "read-only"], [call["argv"][i:i + 2] for i in range(len(call["argv"]))])
 
-        evs = [e for e in self.sb.ledger() if e["run_id"] == rev_id]
+        evs = [e for e in self.sb.ledger() if e["run_id"] == rev_id and e["event"] != "live_fallback"]
         self.assertEqual([e["event"] for e in evs], ["review", "result"])
         self.assertEqual((evs[0]["from"], evs[0]["to"], evs[0]["parent_run_id"], evs[0]["via"]),
                          ("claude", "codex", rid, "CK"))

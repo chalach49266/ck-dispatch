@@ -2,13 +2,17 @@
 
 One JSON line per event. Every line has the same keys:
   event          dispatch | review | result | refused | busy | accept
+                 | live_window_opened  (--live: the window ck-run opened; note = window_id=<id>; terminal; profile;
+                                        whether the title is locked; the title)
+                 | live_fallback       (--live: the window did not run the agent; note = the reason; the run
+                                        continues headless)
   run_id, parent_run_id
   from, to       "CK" or an agent name (a review goes from the reviewed agent to the reviewer, via CK;
                  the thread view labels it "CK → <reviewer> · review of <agent>'s run")
   title, workspace, task_type, agent, model, mode, approved, write_scope
   prompt_path, response_path, summary_path
   files_read, files_changed
-  status         dispatched | ok | partial | failed | timeout | flagged | violation | refused | busy
+  status         dispatched | ok | partial | failed | timeout | flagged | violation | refused | busy | fallback
   accepted       null until `ck-run accept`, then true/false
   ts, started_at, finished_at, duration_s, exit_code, note
 """
@@ -185,6 +189,12 @@ def render_thread(events: list, run_id: str, with_summary: bool = True) -> str:
             L.append(f"- **{op.get('status')}** at {_hm(op.get('ts'))}: {op.get('note') or ''}")
         else:
             L.append(f"- status: {op.get('status')} since {_hm(op.get('ts'))} (no result yet)")
+        for ev in r.events:
+            name = ev.get("event") or ""
+            if name == "live_window_opened":
+                L.append(f"- live window: {ev.get('note') or ''}")
+            elif name == "live_fallback":
+                L.append(f"- **live fallback**: {ev.get('note') or ''}")
         if acc:
             word = "yes" if acc.get("accepted") else "no"
             L.append(f"- accepted: **{word}** by {acc.get('from')} at {_hm(acc.get('ts'))}"

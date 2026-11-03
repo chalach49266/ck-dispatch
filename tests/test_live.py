@@ -200,7 +200,8 @@ class TestLiveRuns(LiveBase):
                 self.assertIn(f"Stub {agent} finished the task.", out[1])
                 osa = self.sb.osascript_calls()[-1]["argv"]
                 self.assertIn('tell application "Terminal"', osa)
-                self.assertEqual(osa[-2], f"/bin/bash {os.path.join(rd, 'live.sh')}")
+                self.assertNotIn("activate", osa)  # a focused window would get the user's keystrokes
+                self.assertEqual(osa[-3], f"/bin/bash {os.path.join(rd, 'live.sh')}")
                 call = self.sb.calls()[-1]
                 self.assertTrue(call["live"], call["argv"])
                 self.assertIn("UNIQUE-LIVE-TASK-55", call["prompt"])
@@ -222,9 +223,10 @@ class TestLiveRuns(LiveBase):
                     self.assertIn("holds the run id", res["live"]["session_how"])
                 self.assertTrue(open(os.path.join(rd, "result.md")).read().startswith("# Live answer"))
                 evs = [e for e in self.sb.ledger() if e["run_id"] == res["run_id"]]
-                self.assertEqual([e["event"] for e in evs], ["dispatch", "result"])
-                self.assertTrue(evs[1]["prompt_path"].endswith("prompt-live.md"))
-                self.assertEqual(evs[1]["status"], "ok")
+                self.assertEqual([e["event"] for e in evs], ["dispatch", "live_window_opened", "result"])
+                self.assertIn("window_id=4242", evs[1]["note"])
+                self.assertTrue(evs[2]["prompt_path"].endswith("prompt-live.md"))
+                self.assertEqual(evs[2]["status"], "ok")
 
     def test_quitting_with_ctrl_c_after_summary_is_still_ok(self):
         self.sb.window("run")
@@ -318,6 +320,12 @@ class TestLiveFallback(LiveBase):
         self.assertIn("Not authorized", res["live"]["window_error"])
         self.assertTrue(any("ran headless" in n for n in res["notes"]))
         self.assertTrue(self.sb.ledger()[-1]["prompt_path"].endswith("/prompt.md"))
+        evs = [e["event"] for e in self.sb.ledger() if e["run_id"] == res["run_id"]]
+        self.assertEqual(evs, ["dispatch", "live_fallback", "result"])
+        fb = [e for e in self.sb.ledger() if e["event"] == "live_fallback"][-1]
+        self.assertEqual(fb["status"], "fallback")
+        self.assertIn("Not authorized", fb["note"])
+        self.assertIn("LIVE WINDOW FAILED", p.stderr)
         self._no_late_start(self.rd(p))
 
     def test_window_that_never_starts_falls_back(self):
@@ -329,6 +337,10 @@ class TestLiveFallback(LiveBase):
         self.assertIn("exec", self.sb.calls()[-1]["argv"])
         res = self.sb.result(self.sb.run_id_from(p))
         self.assertIn("did not start the agent", res["live"]["window_error"])
+        evs = [e for e in self.sb.ledger() if e["run_id"] == res["run_id"]]
+        self.assertEqual([e["event"] for e in evs], ["dispatch", "live_window_opened", "live_fallback", "result"])
+        self.assertIn("did not start the agent", evs[2]["note"])
+        self.assertIn("LIVE WINDOW FAILED", p.stderr)
         self._no_late_start(self.rd(p))
 
     def test_agent_error_exit_right_away_falls_back(self):
@@ -340,6 +352,9 @@ class TestLiveFallback(LiveBase):
         self.assertEqual([c["live"] for c in calls], [True, False])
         res = self.sb.result(self.sb.run_id_from(p))
         self.assertIn("exited with code 2", res["live"]["window_error"])
+        fb = [e for e in self.sb.ledger() if e["run_id"] == res["run_id"] and e["event"] == "live_fallback"]
+        self.assertEqual(len(fb), 1)
+        self.assertIn("exited with code 2", fb[0]["note"])
 
     def test_no_live_never_opens_a_window(self):
         self.sb.window("run")
@@ -360,6 +375,110 @@ class TestLiveFallback(LiveBase):
         self.assertIn(" exec ", p.stdout)
         self.assertEqual(self.sb.osascript_calls(), [])
         self.assertEqual(self.sb.calls(), [])
+
+
+class TestLiveWindowIdentity(LiveBase):
+    """2026-11-03 live fix: the window runs live.sh as its command (no typed text, no activate), has a
+    'CK · agent · title · run' name, a per-agent iTerm2 profile (locked title, tab color, badge), and every
+    window event is in the ledger."""
+
+    def test_title_format(self):
+        rid = "2026-11-03T120353-devfab-general-codex-f06a"
+        self.assertEqual(live.window_title("codex", "livefix smoke codex", rid),
+                         "CK · codex · livefix smoke codex · 120353-f06a")
+        t = live.window_title("claude", "x" * 300, rid)
+        self.assertLess(len(t), 100)
+        self.assertTrue(t.endswith("… · 120353-f06a"))
+        self.assertEqual(live.window_title("agy", "a\n  b", "odd-id"), "CK · agy · a b · odd-id")
+
+    def test_iterm_runs_the_launcher_as_its_command(self):
+        self.sb.set_live(terminal="iTerm2")
+        self.sb.window("run", window_id=777)
+        for agent in ("claude", "codex", "cursor", "agy"):
+            with self.subTest(agent=agent):
+                p = self.sb.run(agent, title=f"livefix smoke {agent}")
+                self.assertEqual(p.returncode, 0, p.stderr)
+                rd = self.rd(p)
+                rid = self.sb.run_id_from(p)
+                osa = self.sb.osascript_calls()[-1]["argv"]
+                script = "\n".join(osa[1:-3])
+                self.assertIn('tell application "iTerm"', script)
+                self.assertIn("create window with profile prof command cmd", script)
+                self.assertIn("create window with default profile command cmd", script)
+                self.assertNotIn("write text", script)  # the old, racy way: typed into a shell
+                self.assertNotIn("activate", script)
+                self.assertEqual(osa[-3], f"/bin/bash {os.path.join(rd, 'live.sh')}")
+                short = rid.split("-")[2].split("T")[1] + "-" + rid.split("-")[-1]
+                self.assertEqual(osa[-2], f"CK · {agent} · livefix smoke {agent} · {short}")
+                self.assertEqual(osa[-1], f"CK Live {agent}")
+                opened = [e for e in self.sb.ledger() if e["run_id"] == rid and e["event"] == "live_window_opened"]
+                self.assertEqual(len(opened), 1)
+                self.assertIn("window_id=777", opened[0]["note"])
+                self.assertIn("title locked: yes", opened[0]["note"])
+                res = self.sb.result(rid)
+                self.assertEqual(res["live"]["window"]["window_id"], "777")
+                self.assertEqual(res["status"], "ok")
+                thread = self.sb.ck("thread", rid).stdout
+                self.assertIn("live window: window_id=777", thread)
+
+    def test_iterm_profiles_lock_the_title_and_color_each_agent(self):
+        self.sb.set_live(terminal="iTerm2")
+        self.sb.window("run")
+        p = self.sb.run("cursor")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        path = os.path.join(self.sb.home, *live.PROFILE_FILE)
+        prof = json.load(open(path))["Profiles"]
+        self.assertEqual([x["Name"] for x in prof], [f"CK Live {a}" for a in ("claude", "codex", "cursor", "agy")])
+        self.assertTrue(all(x["Allow Title Setting"] is False and x["Use Tab Color"] for x in prof))
+        colors = {json.dumps(x["Tab Color"], sort_keys=True) for x in prof}
+        self.assertEqual(len(colors), 4)
+        self.assertEqual(len({x["Guid"] for x in prof}), 4)
+        self.assertIn("CK cursor", [x["Badge Text"] for x in prof])
+        mtime = os.stat(path).st_mtime_ns
+        self.assertEqual(live.ensure_iterm_profiles(self.sb.home)[1:], (False, None))  # unchanged: not rewritten
+        self.assertEqual(os.stat(path).st_mtime_ns, mtime)
+
+    def test_default_profile_means_title_not_locked(self):
+        self.sb.set_live(terminal="iTerm2")
+        self.sb.window("run", profile_loaded=False)
+        p = self.sb.run("codex")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        opened = [e for e in self.sb.ledger() if e["event"] == "live_window_opened"][-1]
+        self.assertIn("title locked: no", opened["note"])
+        sh = open(os.path.join(self.rd(p), "live.sh")).read()
+        self.assertIn('if [ "$TERM_PROGRAM" = "iTerm.app" ]; then', sh)  # badge + tab color by escape code
+        self.assertIn("SetBadgeFormat", sh)
+        self.assertIn("bg;green;brightness;163", sh)
+
+    def test_window_that_never_starts_reports_what_it_shows(self):
+        self.sb.set_live(terminal="iTerm2")
+        self.sb.window("silent", tail="(base) user@mac ~ % is /bin/bash live.sh\nzsh: command not found: is")
+        p = self.sb.run("codex")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("exec", self.sb.calls()[-1]["argv"])  # ran headless
+        fb = [e for e in self.sb.ledger() if e["event"] == "live_fallback"][-1]
+        self.assertIn("iTerm2 window (id 4242) did not start the agent", fb["note"])
+        self.assertIn("zsh: command not found: is", fb["note"])
+        self.assertIn("zsh: command not found: is", p.stderr)
+
+    def test_iterm_failure_tries_terminal_then_falls_back(self):
+        self.sb.set_live(terminal="iTerm2")
+        p = self.sb.run("agy")  # the mock osascript fails by default
+        self.assertEqual(p.returncode, 0, p.stderr)
+        calls = self.sb.osascript_calls()
+        self.assertEqual(len(calls), 2)
+        self.assertIn('tell application "iTerm"', calls[0]["argv"])
+        self.assertIn('tell application "Terminal"', calls[1]["argv"])
+        fb = [e for e in self.sb.ledger() if e["event"] == "live_fallback"][-1]
+        self.assertIn("iTerm2: osascript exit 1", fb["note"])
+        self.assertIn("Terminal: osascript exit 1", fb["note"])
+
+    def test_launcher_holds_the_window_only_in_a_real_terminal(self):
+        text = live.script_text(run_dir="/r", cwd="/w", env={"PATH": "/p"}, argv=["/bin/agent", PROMPT],
+                                prompt_path="/r/p.md", title="CK · cursor · t · 1-a", agent="cursor")
+        hold = 'if [ -t 0 ] && [ -t 1 ]; then exec "${SHELL:-/bin/zsh}" -l; fi'
+        self.assertEqual(text.count(hold), 2)  # after the agent, and after "Nothing to do"
+        self.assertIn("printf '\\033]0;%s\\007' 'CK · cursor · t · 1-a'", text)
 
 
 if __name__ == "__main__":
