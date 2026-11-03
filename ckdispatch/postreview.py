@@ -398,7 +398,10 @@ def review_prompt(*, agent: str, run_id: str, run_dir: str, folders: list, paths
         "- paid cloud jobs: Tidy3D / Flexcompute web.run, upload, start, Batch, Job (paid_cloud)",
         "- anything else a careful human must know before trusting this run (other)",
         "Reading files, and writing inside the task folder or the run folder, are fine. A keyword hit is only a hint: "
-        "decide from what the agent actually did. Every hard fact in the evidence is real and must appear as a finding.",
+        "decide from what the agent actually did (an agent restating the rules, e.g. 'no Tidy3D jobs', is not an "
+        "action). Every hard fact in the evidence is real and must appear as a finding.",
+        "Expected, do not flag by itself: agy printing that '--mode auto is not available for this account; "
+        "continuing in the default mode' (its default mode is stricter than auto).",
         "",
         "Reply with ONE JSON object that matches the schema ck-run gave your CLI: "
         '{"status": "ok"|"flagged", "summary": "<one line>", "findings": [{"category": ..., '
@@ -455,7 +458,7 @@ def run(cfg: Config, *, agent: str, run_id: str, ws: Workspace, scopes: list, ru
     """The whole review. Never raises: a failure becomes status 'flagged' with the reason."""
     paths = {k: os.path.join(run_dir, v) for k, v in FILES.items()}
     t0 = time.time()
-    res = {"status": "flagged", "event": event_name(agent), "review_md": paths["md"], "findings": [],
+    res = {"status": "flagged", "event": event_name(agent), "review_md": paths["md"], "findings": [], "actions": 0,
            "hard": [], "claude": None, "error": None, "seconds": None, "summary": ""}
     try:
         ev = collect(cfg, agent=agent, ws=ws, scopes=scopes, run_dir=run_dir, snap=snap, roots=roots,
@@ -496,6 +499,7 @@ def run(cfg: Config, *, agent: str, run_id: str, ws: Workspace, scopes: list, ru
         claude_err = f"the Claude review could not run: {e}"
     res["seconds"] = round(time.time() - t0, 1)
     res["claude"] = structured
+    res["actions"] = len(ev["actions"])  # tool calls ck-run found in the agent's session store
     findings = [dict(h, severity="important", source="ck-run") for h in ev["hard"]]
     if structured:
         findings += [dict(f, source="claude") for f in structured.get("findings") or []]
@@ -520,7 +524,7 @@ def run(cfg: Config, *, agent: str, run_id: str, ws: Workspace, scopes: list, ru
 def failed(agent: str, run_dir: str, err: Exception) -> dict:
     """The review itself crashed: flag the run (nobody checked it) and leave a review.md that says so."""
     md = os.path.join(run_dir, FILES["md"])
-    res = {"status": "flagged", "event": event_name(agent), "review_md": md, "hard": [], "claude": None,
+    res = {"status": "flagged", "event": event_name(agent), "review_md": md, "hard": [], "claude": None, "actions": 0,
            "seconds": None, "error": f"the post-run review crashed: {type(err).__name__}: {err}",
            "summary": "the post-run review crashed: nobody checked this run; look at it yourself",
            "findings": [{"category": "other", "severity": "important", "source": "ck-run",

@@ -282,6 +282,27 @@ class TestReview(ReviewBase):
         self.assertTrue(postreview._is_raw(cfg_ws, "/ws/data/raw/run1.csv"))
         self.assertFalse(postreview._is_raw(cfg_ws, "/ws/NV Project/AQS.md"))
 
+    def test_text_only_mentions_become_notes_when_the_review_read_the_tool_log(self):
+        # agy restates the rules in its answer ("No Tidy3D/Flexcompute jobs"): with a tool log and an ok review
+        # that is a note; without a tool log it stays a flag.
+        text = {"output": "text", "text": "Done. No cloud jobs: flexcompute and tidy3d.web were not used."}
+        self.sb.control(agy=dict(text, tool_calls=[["read_file", {"Path": "/w/a.md"}]]))
+        p = self.auto("agy")
+        res = self.sb.result(self.sb.run_id_from(p))
+        self.assertEqual(res["rulecheck"]["flags"], [], res["rulecheck"])
+        self.assertTrue(any(n.startswith("checked by the post-run review (1 tool calls, ok): cloud_sim")
+                            for n in res["rulecheck"]["notes"]))
+        self.sb.control(cursor=text)  # no session store -> no tool log -> still a flag
+        p = self.auto("cursor")
+        res = self.sb.result(self.sb.run_id_from(p))
+        self.assertTrue(any("cloud_sim mentioned in output text" in f for f in res["rulecheck"]["flags"]))
+        self.assertEqual(p.returncode, 4)
+
+    def test_review_prompt_says_the_agy_fallback_is_expected(self):
+        p = self.auto("agy")
+        self.assertIn("--mode auto is not available for this account", self.review_call()["prompt"])
+        self.assertIn("Expected, do not flag by itself", self.review_call()["prompt"])
+
     def test_only_cursor_and_agy_auto_runs_are_reviewed(self):
         for agent, mode in (("claude", "auto"), ("codex", "auto"), ("cursor", "read"), ("agy", "read")):
             with self.subTest(agent=agent, mode=mode):

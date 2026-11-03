@@ -550,6 +550,12 @@ def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, 
                       duration_s=review["seconds"],
                       note=(f"{review['status']}: {postreview.headline(review) if review['status'] == 'flagged' else review['summary']}")[:1000],
                       **{"from": "claude", "to": "CK"})
+        if review["status"] == "ok" and review.get("actions"):
+            # Text-only mentions were flags because Cursor/agy give no tool log on stdout. The review read the
+            # agent's real tool calls from its session store and found nothing: keep them as notes.
+            text_only = [f for f in rc["flags"] if "mentioned in output text (no tool log to confirm)" in f]
+            rc["flags"] = [f for f in rc["flags"] if f not in text_only]
+            rc["notes"] += [f"checked by the post-run review ({review['actions']} tool calls, ok): {f}" for f in text_only]
         if review["status"] == "flagged":
             rc["flags"].append(f"post-run Claude review flagged the run: {postreview.headline(review)} "
                                f"(see {review['review_md']})")
