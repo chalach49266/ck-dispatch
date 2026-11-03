@@ -274,13 +274,22 @@ class TestReview(ReviewBase):
         cats = [f["category"] for f in self.sb.result(rid)["post_review"]["findings"] if f["source"] == "ck-run"]
         self.assertIn("deletion", cats)
 
-    def test_aqs_counts_as_raw_whatever_the_config_says(self):
-        cfg_ws = type("W", (), {})()
-        cfg_ws.root = cfg_ws.real_root = "/ws"
-        cfg_ws.raw = []
-        self.assertTrue(postreview._is_raw(cfg_ws, "/ws/AQS/report.md"))
-        self.assertTrue(postreview._is_raw(cfg_ws, "/ws/data/raw/run1.csv"))
-        self.assertFalse(postreview._is_raw(cfg_ws, "/ws/NV Project/AQS.md"))
+    def test_aqs_counts_as_raw_whatever_the_config_says_except_in_nv(self):
+        # chalach 2026-11-03 15:07 CT ("yes"): nv may write AQS (01a7f01), so the review stops calling AQS/ raw
+        # there; every other workspace (and an unknown one) still does. raw/ stays raw everywhere.
+        for key in (None, "devfab", "washu", "nv"):
+            with self.subTest(key=key):
+                cfg_ws = type("W", (), {})()
+                cfg_ws.root = cfg_ws.real_root = "/ws"
+                cfg_ws.raw = []
+                if key:
+                    cfg_ws.key = key
+                self.assertEqual(postreview._is_raw(cfg_ws, "/ws/AQS/report.md"), key != "nv")
+                self.assertEqual(postreview._is_raw(cfg_ws, "/ws/NV Project/AQS/x.md"), key != "nv")
+                self.assertTrue(postreview._is_raw(cfg_ws, "/ws/data/raw/run1.csv"))
+                self.assertTrue(postreview._is_raw(cfg_ws, "/ws/AQS/raw/scan.csv"))
+                self.assertFalse(postreview._is_raw(cfg_ws, "/ws/NV Project/AQS.md"))
+                self.assertEqual(bool(postreview.writable_note(cfg_ws)), key == "nv")
 
     def test_text_only_mentions_become_notes_when_the_review_read_the_tool_log(self):
         # agy restates the rules in its answer ("No Tidy3D/Flexcompute jobs"): with a tool log and an ok review
@@ -332,6 +341,77 @@ class TestReview(ReviewBase):
         rid = self.sb.run_id_from(p)
         t = self.sb.ck("thread", rid).stdout
         self.assertIn("cursor review: **ok**", t)
+
+
+class TestNvAqsReview(ReviewBase):
+    """chalach 2026-11-03 15:07 CT ("yes"): the review stops flagging AQS/ edits when the workspace is nv (AQS is
+    writable there since 01a7f01). AQS edits from other workspaces, and every other flag, stay."""
+
+    def nv_auto(self, agent, *extra):
+        return self.sb.run(agent, "nv", "--mode", "auto", "--no-live", *extra)
+
+    def hard(self, p):
+        res = self.sb.result(self.sb.run_id_from(p))["post_review"]
+        return res, {(f["category"], f["evidence"]) for f in res["findings"] if f["source"] == "ck-run"}
+
+    def test_nv_aqs_edit_in_the_task_folder_is_ok(self):
+        edits = [os.path.join(self.sb.nv, "AQS", "brief.md"), os.path.join(self.sb.nv, "AQS", "site", "page.md")]
+        for agent in ("cursor", "agy"):
+            with self.subTest(agent=agent):
+                self.sb.control(**{agent: {"write": edits}})
+                p = self.nv_auto(agent)  # nv auto default scopes: NV Project/ and AQS/
+                self.assertEqual(p.returncode, 0, p.stderr)
+                res, hard = self.hard(p)
+                self.assertEqual(res["status"], "ok", res)
+                self.assertEqual(hard, set())
+                rid, evs = self.events(p)
+                self.assertEqual([e["status"] for e in evs if e["event"] == f"{agent}_review"], ["ok"])
+                text = open(os.path.join(self.sb.runs, rid, "review-input.md")).read()
+                self.assertIn("- raw data folders (never change): raw/, nv_magnetometer_project/", text)
+                self.assertIn("AQS/ is writable in the nv workspace", text)
+                for e in edits:
+                    self.assertIn(f"- `{e}`", text)
+                prompt = self.review_call()["prompt"]
+                self.assertIn("- touching raw data folders: raw/ or the raw list", prompt)
+                self.assertNotIn("AQS/, raw/", prompt)
+                self.assertIn("Expected, do not flag by itself: AQS/ is writable in the nv workspace", prompt)
+                self.assertIn("Not raw here: AQS/ is writable", open(os.path.join(self.sb.runs, rid, "review.md")).read())
+
+    def test_nv_aqs_outside_the_write_scope_is_still_flagged(self):
+        aqs = os.path.join(self.sb.nv, "AQS", "brief.md")
+        self.sb.control(cursor={"write": [aqs]})
+        p = self.nv_auto("cursor", "--write-scope", "NV Project/wiki")
+        self.assertEqual(p.returncode, 5, p.stderr)  # the rule check calls it a violation too
+        res, hard = self.hard(p)
+        self.assertEqual(res["status"], "flagged")
+        self.assertIn(("outside_task_folder", aqs), hard)
+        self.assertNotIn(("raw_data", aqs), hard)
+
+    def test_nv_other_flags_stay(self):
+        aqs_raw = os.path.join(self.sb.nv, "AQS", "raw", "scan.csv")
+        gone = os.path.join(self.sb.nv, "AQS", "brief.md")
+        self.sb.control(agy={"write": [aqs_raw], "delete": [gone]})
+        p = self.nv_auto("agy")
+        self.assertEqual(p.returncode, 4, p.stderr)  # only the review flags these (the rule check is clean)
+        res, hard = self.hard(p)
+        self.assertEqual(res["status"], "flagged")
+        self.assertIn(("raw_data", aqs_raw), hard)  # AQS/.../raw/ is still raw
+        self.assertIn(("deletion", gone), hard)  # deleting in AQS/ is still a deletion
+        nv_raw = os.path.join(self.sb.nv, "nv_magnetometer_project", "data", "run.csv")
+        self.sb.control(cursor={"write": [nv_raw]})
+        p = self.nv_auto("cursor")
+        self.assertEqual(p.returncode, 5, p.stderr)
+        self.assertIn(("raw_data", nv_raw), self.hard(p)[1])  # the nv raw list is still raw
+
+    def test_aqs_from_another_workspace_is_still_raw(self):
+        aqs = os.path.join(self.scope, "AQS", "report.md")  # devfab Projects/Notes/AQS/, inside the write scope
+        self.sb.control(cursor={"write": [aqs]})
+        p = self.auto("cursor")
+        self.assertEqual(p.returncode, 4, p.stderr)
+        res, hard = self.hard(p)
+        self.assertIn(("raw_data", aqs), hard)
+        self.assertIn("- touching raw data folders: AQS/, raw/ or the raw list", self.review_call()["prompt"])
+        self.assertNotIn("is writable in the", self.review_call()["prompt"])
 
 
 class TestReviewUnits(unittest.TestCase):

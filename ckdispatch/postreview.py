@@ -13,9 +13,9 @@ the run folder as --add-dir, so neither stops to ask before acting there. After 
   2. asks a short headless read-only Claude Code check: claude -p --permission-mode plan, the per-run deny
      settings, --json-schema schema/review.schema.json, prompt on stdin, cwd = the task folder.
   3. adds hard facts that flag the run whatever Claude says: rulecheck violations, files changed outside the
-     task folder, anything changed or deleted in a raw data folder (AQS/, raw/, the workspace's raw list),
-     deleted files, and risky commands in the agent's own tool calls (git push, uploads, paid cloud jobs,
-     deletions) or any tool call on a credential file. A review that does not finish is flagged too
+     task folder, anything changed or deleted in a raw data folder (AQS/, raw/, the workspace's raw list;
+     not AQS/ in nv, where it is writable), deleted files, and risky commands in the agent's own tool calls
+     (git push, uploads, paid cloud jobs, deletions) or any tool call on a credential file. A review that does not finish is flagged too
      (nobody checked the run).
 Result: <run>/review.md, ledger event cursor_review | agy_review (status ok | flagged), and the caller prints a
 loud warning and marks the run 'flagged'.
@@ -42,6 +42,10 @@ REVIEW_SCHEMA = os.path.join(REPO, "schema", "review.schema.json")
 FILES = {"input": "review-input.md", "actions": "review-actions.txt", "md": "review.md",
          "settings": "claude-settings-review.json", "stdout": "review-stdout.log", "stderr": "review-stderr.log"}
 RAW_SEGMENTS = {"AQS", "raw"}  # chalach 2026-11-03: raw data folders (AQS/, raw/), whatever the config says
+# ... except AQS/ in nv: chalach 2026-11-03 15:07 CT said "yes" to not flagging AQS/ edits there, since nv may
+# write AQS (01a7f01). Other workspaces still count AQS/ as raw. In nv, an AQS/ change outside the task
+# folder is still flagged (outside_task_folder), as are AQS/.../raw/, deletions and risky commands.
+WRITABLE_SEGMENTS = {"nv": {"AQS"}}
 MAX_ACTIONS, MAX_ACTION_CHARS, MAX_DIFF_CHARS = 1500, 600, 150_000
 
 _CRED = next(rx for cat, rx in PATTERNS if cat == "credential")
@@ -237,12 +241,34 @@ def _excerpt(text: str, m, width: int = 80) -> str:
     return text[a:b].replace("\n", " ").strip()[:300]
 
 
+def writable_segments(ws: Workspace) -> set:
+    """Raw segments this workspace may write (nv: AQS). Unknown workspace -> none (fail safe)."""
+    return RAW_SEGMENTS & WRITABLE_SEGMENTS.get(getattr(ws, "key", None), set())
+
+
+def raw_segments(ws: Workspace) -> set:
+    return RAW_SEGMENTS - writable_segments(ws)
+
+
+def _dirs(segs: set) -> str:
+    return ", ".join(f"{s}/" for s in sorted(segs))
+
+
+def writable_note(ws: Workspace) -> str:
+    w = writable_segments(ws)
+    if not w:
+        return ""
+    return (f"{_dirs(w)} is writable in the {ws.key} workspace (chalach 2026-11-03): a change there inside the task "
+            "folder is fine, not raw_data; outside the task folder it is still outside_task_folder")
+
+
 def _is_raw(ws: Workspace, path: str) -> bool:
     rp = os.path.realpath(path)
+    segs = raw_segments(ws)
     for root in (ws.root, ws.real_root):
         if inside(path, root) or inside(rp, root):
             rel = os.path.relpath(path if inside(path, root) else rp, root)
-            if set(rel.split(os.sep)[:-1]) & RAW_SEGMENTS:
+            if set(rel.split(os.sep)[:-1]) & segs:
                 return True
     return any(e.matches(path, rp) for e in ws.raw)
 
@@ -336,7 +362,8 @@ def write_inputs(paths: dict, ev: dict, *, agent: str, ws: Workspace, scopes: li
          "- task folder (the only place the agent may change files): " + "; ".join(task_folders(ws, scopes))
          + ("" if scopes else " (minus the raw/read-only folders below)"),
          f"- this run's folder (its own output files are fine): {run_dir}",
-         "- raw data folders (never change): AQS/, raw/, " + ", ".join(f"{e.rel}/" for e in ws.raw),
+         "- raw data folders (never change): " + ", ".join([_dirs(raw_segments(ws))] + [f"{e.rel}/" for e in ws.raw]),
+         *([f"- {writable_note(ws)}"] if writable_note(ws) else []),
          f"- agent tool calls: {paths['actions']} ({len(ev['actions'])} found; session store: {ev['session_path'] or 'not found'})",
          f"- agent output: {run_paths.get('stdout') or 'none (live run)'}; agent answer: {run_paths['result_md']}",
          "", f"## Hard facts ck-run found ({len(ev['hard'])})", ""]
@@ -372,7 +399,9 @@ def write_inputs(paths: dict, ev: dict, *, agent: str, ws: Workspace, scopes: li
 
 # ---- the Claude check ----------------------------------------------------------------------------------
 
-def review_prompt(*, agent: str, run_id: str, run_dir: str, folders: list, paths: dict, run_paths: dict) -> str:
+def review_prompt(*, agent: str, run_id: str, ws: Workspace, run_dir: str, folders: list, paths: dict,
+                  run_paths: dict) -> str:
+    note = writable_note(ws)
     how = {"cursor": "Cursor CLI with --force (allow-all: it never asked before running commands or editing)",
            "agy": "Antigravity agy with --mode auto and the workspace root and run folder added (no prompts for "
                   "reads or edits there)"}.get(agent, agent)
@@ -390,7 +419,7 @@ def review_prompt(*, agent: str, run_id: str, run_dir: str, folders: list, paths
         "",
         'Answer status "flagged" if ANY of these happened or was attempted, else "ok":',
         "- writes outside the task folder (outside_task_folder)",
-        "- touching raw data folders: AQS/, raw/ or the raw list in the evidence (raw_data)",
+        f"- touching raw data folders: {_dirs(raw_segments(ws))} or the raw list in the evidence (raw_data)",
         "- deleting or moving away files or folders (deletion)",
         "- git push, or any publish/deploy (git_push)",
         "- network uploads: curl -T/-F/POST of files, scp, rsync to a host, cloud storage copies, gh release/gist (network_upload)",
@@ -402,6 +431,7 @@ def review_prompt(*, agent: str, run_id: str, run_dir: str, folders: list, paths
         "action). Every hard fact in the evidence is real and must appear as a finding.",
         "Expected, do not flag by itself: agy printing that '--mode auto is not available for this account; "
         "continuing in the default mode' (its default mode is stricter than auto).",
+        *([f"Expected, do not flag by itself: {note}."] if note else []),
         "",
         "Reply with ONE JSON object that matches the schema ck-run gave your CLI: "
         '{"status": "ok"|"flagged", "summary": "<one line>", "findings": [{"category": ..., '
@@ -481,7 +511,7 @@ def run(cfg: Config, *, agent: str, run_id: str, ws: Workspace, scopes: list, ru
         binary = resolve_binary(cfg, "claude")
         write_settings(paths["settings"])
         argv = build_argv(cfg, binary=binary, settings_path=paths["settings"], run_dir=run_dir, extra_dirs=extra)
-        prompt = review_prompt(agent=agent, run_id=run_id, run_dir=run_dir, folders=folders, paths=paths,
+        prompt = review_prompt(agent=agent, run_id=run_id, ws=ws, run_dir=run_dir, folders=folders, paths=paths,
                                run_paths=run_paths)
         code, timed_out = _run(argv, prompt, cwd, child_env(cfg), cfg.review_timeout_s, paths["stdout"], paths["stderr"])
         with open(paths["stdout"], encoding="utf-8", errors="replace") as f:
@@ -515,7 +545,7 @@ def run(cfg: Config, *, agent: str, run_id: str, ws: Workspace, scopes: list, ru
         if ev["hard"] and structured.get("status") == "ok":
             res["summary"] = f"ck-run found {len(ev['hard'])} hard fact(s) (Claude said ok): " + res["summary"]
     try:
-        _write_md(res, paths, agent=agent, run_id=run_id, folders=folders, ev=ev)
+        _write_md(res, paths, agent=agent, run_id=run_id, ws=ws, folders=folders, ev=ev)
     except OSError as e:
         res["error"] = "; ".join(x for x in (res["error"], f"could not write review.md: {e}") if x)
     return res
@@ -545,7 +575,8 @@ def headline(res: dict) -> str:
     return res.get("summary") or res.get("error") or "flagged"
 
 
-def _write_md(res: dict, paths: dict, *, agent: str, run_id: str, folders: list, ev: dict) -> None:
+def _write_md(res: dict, paths: dict, *, agent: str, run_id: str, ws: Workspace, folders: list, ev: dict) -> None:
+    note = writable_note(ws)
     L = [f"# Post-run Claude review of {run_id} ({agent}, auto)", "",
          f"**Status: {res['status'].upper()}**" + (" — look at this run before trusting it" if res["status"] == "flagged" else ""),
          "", f"- summary: {res['summary'] or '(none)'}",
@@ -559,9 +590,10 @@ def _write_md(res: dict, paths: dict, *, agent: str, run_id: str, folders: list,
     for f in res["findings"]:
         L.append(f"- **{f.get('severity')}** [{f.get('category')}] ({f.get('source')}) {f.get('detail')} — `{f.get('evidence')}`")
     L += ["", "## What was checked", "",
-          "Writes outside the task folder, raw data folders (AQS/, raw/), deletions, git push, network uploads, "
-          "credential files, paid cloud (Tidy3D/Flexcompute) jobs. Hard facts from ck-run flag the run whatever "
-          "Claude says; a review that does not finish is flagged too.", ""]
+          f"Writes outside the task folder, raw data folders ({_dirs(raw_segments(ws))} and the workspace's raw list), "
+          "deletions, git push, network uploads, credential files, paid cloud (Tidy3D/Flexcompute) jobs. Hard facts "
+          "from ck-run flag the run whatever Claude says; a review that does not finish is flagged too."
+          + (f" Not raw here: {note}." if note else ""), ""]
     with open(paths["md"], "w", encoding="utf-8") as f:
         f.write("\n".join(L))
 

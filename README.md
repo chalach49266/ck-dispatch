@@ -101,8 +101,10 @@ else the workspace).
    --settings <run>/claude-settings-review.json --add-dir <run>`, prompt on stdin, cwd = the task folder,
    timeout `post_review.timeout_s` (default 300 s; optional `post_review.model`).
 3. Flagged: writes outside the task folder, raw data folders (`AQS/`, `raw/`, the workspace's raw list), deletions,
-   git push, network uploads, credential files, paid cloud (Tidy3D/Flexcompute) jobs. `AQS/` is still flagged
-   here although nv agents may now write it (see Raw folders). Hard facts flag the run even
+   git push, network uploads, credential files, paid cloud (Tidy3D/Flexcompute) jobs. In nv, `AQS/` is not raw
+   for the review (chalach 2026-11-03: yes, since nv may write it; see Raw folders): an nv `AQS/` change inside the
+   task folder is fine, one outside it is still `outside_task_folder`, and `AQS/.../raw/`, deletions in `AQS/` and
+   risky commands are still flagged. `AQS/` from any other workspace is still raw. Hard facts flag the run even
    if Claude says ok; a review that does not finish is flagged.
 4. Output: `<run>/review.md` and a ledger event `cursor_review` | `agy_review` (status `ok` | `flagged`). If
    flagged: a loud `!!` warning on stderr, run status `flagged` (exit 4), and summary line 1 =
@@ -205,8 +207,9 @@ activated, and every fallback is loud (see below).
   **AQS is writable** (chalach 2026-11-03: "Keep AQS writable from the NV workspace"; the rule files agree:
   `CLAUDE.md:15` and `NV Project/CLAUDE.md:99`, "AQS/ is writable by all agents"). `--write-scope AQS` is
   accepted, and nv auto mode without `--write-scope` opens both `NV Project/` and `AQS/`. `AGENTS.md:6` still
-  holds: never deploy the AQS website or send decks without approval. The cursor/agy post-run review still
-  counts `AQS/` as raw, so a cursor or agy auto run that changes AQS is flagged (exit 4) for you to check.
+  holds: never deploy the AQS website or send decks without approval. The cursor/agy post-run review does not
+  flag nv `AQS/` edits inside the task folder either (chalach 2026-11-03, "yes"; `postreview.WRITABLE_SEGMENTS`);
+  it still flags `AQS/` changes from other workspaces.
 - **WashU HW** (`washu`, `~/Downloads/WashU HW`, not in OneDrive; `CLAUDE.md:67-75` "Ownership" and chalach
   2026-11-02): the original course files are read-only. Agents may write only in `<course>/solutions/` and
   `<course>/prep/` of the seven course folders (`writable_only`; add a pair when a course is added). Auto mode
@@ -283,7 +286,7 @@ values for permission flags (`plan`, `acceptEdits`, `accept-edits`, `ask`, `read
 ```
 cd ~/PhD_local/ck-dispatch && python3 -I tests/run_all.py
 ```
-109 tests, about 75 s. Stub CLIs (`tests/fake_cli.py`), a mock `osascript` (`tests/fake_osascript.py`: fails
+113 tests, about 79 s. Stub CLIs (`tests/fake_cli.py`), a mock `osascript` (`tests/fake_osascript.py`: fails
 by default, so every older test also covers the headless fallback; `run` runs `live.sh` detached the way a
 Terminal window would; `silent` never starts it), a temp HOME, fake workspaces and a test config. No network,
 no real agent, no Terminal window. They cover: no forbidden flag for any agent or mode; every refusal case;
@@ -307,7 +310,9 @@ the review runs read-only (plan mode, run folder added, task folder as cwd, no s
 `cursor_review`/`agy_review` `ok`; Claude `flagged` → exit 4, loud stderr warning, summary line 1; a review that
 fails or times out is flagged; hard facts flag even when Claude says ok (deleted file, raw-folder and outside
 writes, git diff deletions in a real repo, risky Cursor transcript and agy SQLite tool calls); `AQS/` and `raw/`
-count as raw for the review whatever the config says (nv `AQS/` is a writable scope since 2026-11-03); claude/codex auto and read runs get no review; `--dry-run` names the review.
+count as raw for the review whatever the config says, except `AQS/` in nv (2026-11-03): an nv cursor/agy AQS edit
+in the task folder gets an ok review, while an nv AQS edit outside `--write-scope`, `AQS/.../raw/`, an AQS deletion,
+the nv raw list and devfab `AQS/` are still flagged; claude/codex auto and read runs get no review; `--dry-run` names the review.
 
 ## Step 3 live checks (2026-11-02; claude 2.1.316, codex-cli 0.166.0, agent 2026.10.22, agy 1.4.12)
 

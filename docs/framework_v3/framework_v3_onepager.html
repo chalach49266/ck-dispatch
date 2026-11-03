@@ -249,7 +249,7 @@
       <li><b>Read-only by default.</b> An edit needs your words + time (<code>--approved</code>) and a folder (<code>--write-scope</code>).</li>
       <li><b>Refused before anything runs:</b> skip-permissions, bypass, yolo, <code>--force</code>, auto, full-access, and any permission flag from CK.</li>
       <li><b>Cursor auto = allow-all (<code>--force</code>) + mandatory Claude review; agy auto = <code>--mode auto</code> + workspace &amp; run folder dirs + the same review</b> (approved by chalach, 2026-11-03). Flags writes outside the task folder, raw folders, deletions, push, uploads, credentials, paid cloud.</li>
-      <li><b>Raw folders are read-only</b> (real path checked too). NV: agents write only in <code>NV Project/</code> and <code>AQS/</code>.</li>
+      <li><b>Raw folders are read-only</b> (real path checked too). NV: agents write only in <code>NV Project/</code> and <code>AQS/</code> (the cursor/agy review accepts nv <code>AQS/</code> edits too).</li>
       <li><b>No credentials:</b> clean env, no keys. Claude is denied <code>~/.ssh</code>, <code>.env</code>, <code>*auth*</code>, <code>*credential*</code>, keychains.</li>
       <li><b>No push, deploy or send;</b> no paid cloud sims; no venv or clone in OneDrive.</li>
       <li><b>After each run:</b> disk + log check. Flagged (4) or violation (5) stops the chain.</li>
@@ -276,7 +276,6 @@
   <h2><span class="n">5</span>Open items</h2>
   <ul>
     <li><b>Codex resume:</b> <code>codex resume &lt;id&gt; -s read-only</code> not checked; Codex edit mode not run live.</li>
-    <li><b>AQS writable</b> (your call, 2026-11-03); the cursor/agy review still flags <code>AQS/</code> changes. Keep that?</li>
     <li><b>Attribution email:</b> commits have none (a hook blocks emails). Do you want it?</li>
     <li><b>Not tried live:</b> Cursor/agy plan mode blocking a write; a blind review; accept records.</li>
     <li><b>Gap:</b> codex, cursor, agy can still <i>read</i> credential files (prompt + log scan only).</li>
