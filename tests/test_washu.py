@@ -112,7 +112,8 @@ class WashuUnit(unittest.TestCase):
     def test_auto_default_scopes_are_the_solutions_and_prep_that_exist(self):
         self.assertEqual(default_auto_scopes(self.ws), [self.sol, self.prep, self.qsol])
         self.assertEqual(default_auto_scopes(self.cfg.workspace("devfab")), [])
-        self.assertEqual(default_auto_scopes(self.cfg.workspace("nv")), [os.path.join(self.sb.nv, "NV Project")])
+        self.assertEqual(default_auto_scopes(self.cfg.workspace("nv")),  # chalach 2026-11-03: AQS writable too
+                         [os.path.join(self.sb.nv, "NV Project"), os.path.join(self.sb.nv, "AQS")])
         for d in (self.sol, self.prep, self.qsol):
             shutil.rmtree(d)
         with self.assertRaises(Refused) as cm:

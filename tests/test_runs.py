@@ -311,7 +311,7 @@ class TestRefusals(Base):
             ("codex", "devfab", ["Projects"], "u", "read-only folder 'Projects/CK Design'"),
             ("codex", "devfab", ["Photonics_Ecosystem/repos/gdsfactory"], "u", "protected ~/PhD_local folder"),
             ("codex", "devfab", [".claude"], "u", "read-only folder '.claude'"),
-            ("codex", "nv", ["AQS"], "u", "read-only folder 'AQS'"),
+            ("codex", "nv", ["nv_magnetometer_project"], "u", "read-only folder 'nv_magnetometer_project'"),
             ("codex", "nv", ["NV Project/../output/slides"], "u", "read-only folder 'output'"),
             ("agy", "nv", ["NV Project/../IMU"] , "u", "not an existing folder"),
             ("claude", "devfab", ["Design Library"], "u", "claude may not edit in the workspace"),
@@ -332,6 +332,7 @@ class TestRefusals(Base):
             ("codex", "devfab", ["Microwave_Ecosystem/tools"]),
             ("codex", "nv", ["NV Project/wiki"]),
             ("agy", "nv", ["NV Project"]),
+            ("codex", "nv", ["AQS"]),  # chalach 2026-11-03: AQS writable from the NV workspace
             ("cursor", "devfab", ["Projects/Notes"]),
             ("claude", "devfab", [os.path.join(sb.local, "myrepo")]),
             ("codex", "devfab", [os.path.join(sb.local, "myrepo", "src")]),

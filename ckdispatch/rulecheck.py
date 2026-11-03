@@ -122,7 +122,7 @@ def classify(cfg: Config, ws: Workspace, mode: str, scopes: list, changed: list,
             scoped = mode in ("edit", "auto") and any(inside(rp, s["path"]) or inside(p, s["literal"]) for s in scopes)
         if scoped and ws.writable_only and (inside(p, ws.root) or inside(rp, ws.real_root)) \
                 and not any(inside(rp, e.real) for e in ws.writable_only):
-            scoped = False  # writable-only workspace (nv: NV Project; washu: <course>/solutions, <course>/prep)
+            scoped = False  # writable-only workspace (nv: NV Project, AQS; washu: <course>/solutions, <course>/prep)
         if c["dir"]:
             # A folder's own mtime moves when entries are added, removed or renamed (also by OneDrive sync).
             if raw:

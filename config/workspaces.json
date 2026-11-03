@@ -70,7 +70,6 @@
         "System_Design",
         "IMU",
         "Patent",
-        "AQS",
         "output",
         "qick",
         "qick-dawg",
@@ -78,7 +77,7 @@
         "Archive"
       ],
       "extra_protected_dirs": ["qick-dawg (backup)", "qickdawg_venv", "qickdawg_py310", ".claude", ".cursor", ".agents", ".obsidian"],
-      "writable_only": ["NV Project"],
+      "writable_only": ["NV Project", "AQS"],
       "protected_files": [
         "AGENTS.md",
         "CLAUDE.md",
