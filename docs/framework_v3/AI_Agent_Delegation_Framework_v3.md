@@ -185,14 +185,14 @@ Skill: `ck-delegate` (in `~/PhD_local/grok-bot-skills`). Per-agent steps: `claud
 - **Flagged (exit 4):** the same patterns found only in output text (Cursor and agy give no tool log); a folder change inside a raw folder (it could be a delete); agy printing that `--mode` is not supported in print mode.
 - **Notes only:** folder mtime changes elsewhere (often OneDrive sync).
 
-### 4.7 Cursor auto = allow-all + mandatory Claude review; agy auto = accept-edits + the same review (D7, approved by chalach on 2026-11-03)
+### 4.7 Cursor auto = allow-all + mandatory Claude review; agy auto = auto mode with the workspace and run folder + the same review (D7, approved by chalach on 2026-11-03)
 
 chalach, 2026-11-03: *"do cursor allow everything setting and also have claude code check or other agent or you check it if it is anything important but otherwise always allow"* and *"allow agy to edit any file; it has to ask me every time it wants to edit any file, which is annoying"*.
 
 | Agent, `--mode auto` | Flags (headless and `--live`) | Before D7 |
 |---|---|---|
 | cursor | `--trust --sandbox enabled --force --workspace <task folder>` (`--force` = "Force allow commands unless explicitly denied", `agent --help` 2026.10.22). cwd = the task folder | `--auto-review` (server classifier; still asked for the rest) |
-| agy | `--sandbox --mode accept-edits` (auto-approves edits). cwd = the task folder | `--mode auto`, which is "not available for this account", so agy fell back to asking before every edit |
+| agy | `--sandbox --mode auto --add-dir <workspace root> --add-dir <run folder>`, cwd = the task folder (chalach, later on 2026-11-03: *"agy still asks permission for the Device Fabrication folder ... pass agy --mode auto plus --add-dir for the workspace root and the run folder"*). Interactive: "Auto mode: edits & safe commands auto-approved". Print mode: "--mode auto is not available for this account; continuing in the default mode" (a note for agy auto, not a flag). Never `--dangerously-skip-permissions` | `--mode auto` (then briefly `--mode accept-edits`) with only the task folder: agy asked before touching the Device Fabrication folder and other workspace folders |
 
 - **Still refused:** `-f`, `--yolo`, agy `--dangerously-skip-permissions`, every bypass token, and `--force` for any other agent or mode. CK can never pass `--force` itself (`check_ck_argv`); the guard admits the exact token only in a cursor auto argv built by ck-run (`guards.AUTO_AGENT_FLAGS`).
 - **Mandatory review** (`ckdispatch/postreview.py`), after every cursor or agy auto run: ck-run writes `<run>/review-input.md` (files changed, files that disappeared, git status and diff of the task folder when it has its own repo, rule check, keyword hits) and `<run>/review-actions.txt` (the agent's tool calls from Cursor's JSONL transcript or agy's SQLite conversation store). Then a short read-only Claude Code check (`claude -p --permission-mode plan --json-schema schema/review.schema.json`, the per-run deny settings) reads them.

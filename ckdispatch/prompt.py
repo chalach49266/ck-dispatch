@@ -31,7 +31,8 @@ def header(*, ws: Workspace, run_id: str, agent: str, kind: str, mode: str,
     elif mode == "auto":
         where = "; ".join(s["path"] for s in scopes) or f"{ws.root} (except the read-only folders below)"
         how = {"cursor": "allow-all (--force): your CLI will not ask before acting",
-               "agy": "accept-edits: your CLI will not ask before editing"}.get(agent, "your CLI's safety-reviewed auto mode")
+               "agy": "agy auto mode, with the workspace root and the run folder added: no prompts for reads or edits there"
+               }.get(agent, "your CLI's safety-reviewed auto mode")
         L.append(f"MODE: auto ({how}). Run autonomously. Change files ONLY inside: {where}"
                  + (f"; also write the two output files {outputs}." if live_outbox else ".")
                  + " Make reasonable decisions yourself and mark unknowns (UNKNOWN / UNVERIFIED) instead of inventing."

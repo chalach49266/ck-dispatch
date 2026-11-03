@@ -60,7 +60,8 @@ class TestArgvMap(unittest.TestCase):
                 "codex": [["-s", "workspace-write"], ["-c", 'approval_policy="on-request"'],
                           ["-c", 'approvals_reviewer="auto_review"'], ["-m", "gpt-6.1-sol"]],
                 "cursor": [["--sandbox", "enabled"]],
-                "agy": [["--mode", "accept-edits"]]}  # 2026-11-03: agy --mode auto is not on this account
+                "agy": [["--mode", "auto"], ["--add-dir", "/tmp/run"]]}  # 2026-11-03: + run folder (and the
+                # workspace root when the cwd is a write scope: tests/test_postreview.py)
         for agent in ("claude", "codex", "cursor", "agy"):
             with self.subTest(agent=agent):
                 argv = self._build(agent, "auto").argv
@@ -77,9 +78,8 @@ class TestArgvMap(unittest.TestCase):
                             "skip-permissions", "approval_policy=never", 'approval_policy="never"', "-f "):
                     self.assertNotIn(bad, flat + " ")
                 guards.check_child_argv(argv, PROMPT, auto=True, agent=agent)  # allowed when ck-run injects them
-                if agent != "agy":  # agy auto = accept-edits, the same flag as approved edit mode
-                    with self.assertRaises(Refused):
-                        guards.check_child_argv(argv, PROMPT)  # same tokens refused outside auto
+                with self.assertRaises(Refused):
+                    guards.check_child_argv(argv, PROMPT)  # same tokens refused outside auto
                 if agent == "cursor":
                     with self.assertRaises(Refused):
                         guards.check_child_argv(argv, PROMPT, auto=True, agent="codex")  # --force is cursor's only

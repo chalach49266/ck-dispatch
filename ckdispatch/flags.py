@@ -8,14 +8,18 @@ mode. Writes go to the --write-scope folders if given, else the workspace minus 
   codex   auto: exec ... -C <scope|ws> -s workspace-write -c approval_policy="on-request"
                 -c approvals_reviewer="auto_review" -m <model|gpt-6.1-sol> -     (= --approve-for-me)
   cursor  auto: -p --output-format json --trust --sandbox enabled --force --workspace <scope|ws> <prompt>
-  agy     auto: --output-format json --sandbox ... --mode accept-edits -p <prompt>
+  agy     auto: --output-format json --sandbox ... --mode auto --add-dir <workspace root> --add-dir <run> -p <prompt>
 
 Cursor and agy auto (2026-11-03, approved by chalach: "do cursor allow everything setting ... otherwise always
 allow"; "allow agy to edit any file"): cursor gets its allow-all flag `--force` ("Force allow commands unless
-explicitly denied", `agent --help`, 2026.10.22) instead of `--auto-review`; agy gets `--mode accept-edits`
-(auto-approves edits; `--mode auto` is "not available for this account" and fell back to asking before every
-edit). Both keep --trust/--sandbox, the cwd and --workspace stay the task folder, and every such run gets a
-MANDATORY read-only Claude Code review afterwards (ckdispatch/postreview.py). `-f`, `--yolo` and agy's
+explicitly denied", `agent --help`, 2026.10.22) instead of `--auto-review`. agy (chalach, 2026-11-03, later:
+"agy still asks permission for the Device Fabrication folder ... pass agy --mode auto plus --add-dir for the
+workspace root and the run folder") gets `--mode auto --add-dir <workspace root> --add-dir <run folder>`, so
+reads and edits inside them need no prompt. Interactive agy shows "Auto mode: edits & safe commands
+auto-approved" (checked 2026-11-03); print mode warns "--mode auto is not available for this account;
+continuing in the default mode" (rulecheck keeps that as a note for agy auto, not a flag). Both keep
+--trust/--sandbox, the cwd and --workspace stay the task folder, and every such run gets a MANDATORY read-only
+Claude Code review afterwards (ckdispatch/postreview.py). `-f`, `--yolo` and agy's
 `--dangerously-skip-permissions` stay refused; CK can never pass --force itself.
 
 Read mode (default) and edit mode (only with --approved and --write-scope):
@@ -38,7 +42,7 @@ JSON, agy -p takes the prompt as its value, agy applies --mode plan in print mod
 needed changing. Codex was not run live (blocked by the merge-gate mod), so its argv stays [assumed].
 
 --live (build_live, 2026-11-02): the same permission flags on each CLI's interactive mode (cursor auto: --force,
-agy auto: --mode accept-edits). Initial
+agy auto: --mode auto + --add-dir <workspace root> + --add-dir <run>). Initial
 prompt, per each CLI's --help: claude [prompt], codex [PROMPT], cursor agent [prompt...], agy -i <prompt>.
 """
 from __future__ import annotations
@@ -177,8 +181,10 @@ def build(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, mo
             a += ["--mode", "plan"]
             cwd = ws.root
         elif mode == "auto":
-            a += ["--mode", "accept-edits"]  # never asks before an edit (chalach 2026-11-03) + mandatory Claude review
-            for s in scope_paths[1:]:
+            # chalach 2026-11-03: auto + the workspace root and the run folder as workspace dirs, so agy never asks
+            # before reading or editing inside them; raw folders stay guarded by rulecheck + the Claude review
+            a += ["--mode", "auto"]
+            for s in _unique(scope_paths[1:] + [ws.root, run_dir], skip=root):
                 a += ["--add-dir", s]
             cwd = root
         else:
@@ -211,7 +217,7 @@ def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: lis
       codex   -C <ws|scope> -s read-only|workspace-write [-c ...network_access=false --add-dir <run>]
               -a on-request [-m M] <prompt>
       cursor  --trust --sandbox enabled [--mode plan | --force (auto)] --workspace <ws|scope> --add-dir <run> [...] <prompt>
-      agy     --sandbox --mode plan|accept-edits (edit and auto) --add-dir <run> [...] -i <prompt>
+      agy     --sandbox --mode plan|accept-edits|auto --add-dir <run> [--add-dir <workspace root> (auto)] [...] -i <prompt>
     """
     if agent not in AGENTS:
         raise Refused(f"unknown agent '{agent}'; use one of: {', '.join(AGENTS)}")
@@ -273,14 +279,18 @@ def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: lis
         if model:
             a += ["--model", model]
     else:  # agy
-        a += ["--sandbox", "--mode", {"read": "plan", "edit": "accept-edits", "auto": "accept-edits"}[mode]]
+        a += ["--sandbox", "--mode", {"read": "plan", "edit": "accept-edits", "auto": "auto"}[mode]]
         if mode == "read":
             cwd = ws.root
         else:
             for s in scope_paths[1:]:
                 a += ["--add-dir", s]
             cwd = root
-        for d in [run_dir] + list(extra_read_dirs):
+        if mode == "auto":  # chalach 2026-11-03: the workspace root and the run folder, so agy never asks inside them
+            extra = _unique([ws.root, run_dir] + list(extra_read_dirs), skip=root, already=scope_paths[1:])
+        else:
+            extra = [run_dir] + list(extra_read_dirs)
+        for d in extra:
             a += ["--add-dir", d]
         if model:
             a += ["--model", model]
@@ -289,6 +299,19 @@ def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: lis
     _assert_invariants(agent, mode, a, live=True)
     check_child_argv(a, PROMPT, auto=mode == "auto", agent=agent)
     return Command(agent, a, cwd, False, binary)
+
+
+def _unique(paths: list, skip: str | None = None, already: list | None = None) -> list:
+    """paths in order, without duplicates, without `skip` (the cwd) and without those in `already`."""
+    out, seen = [], {os.path.normpath(p) for p in (already or [])}
+    if skip:
+        seen.add(os.path.normpath(skip))
+    for p in paths:
+        n = os.path.normpath(p)
+        if n not in seen:
+            seen.add(n)
+            out.append(p)
+    return out
 
 
 def _pair(a: list, flag: str, value: str) -> bool:
@@ -308,7 +331,7 @@ def _assert_invariants(agent: str, mode: str, a: list, live: bool = False) -> No
             ok = ("--trust" in a and _pair(a, "--sandbox", "enabled") and "--force" in a
                   and "--yolo" not in a and "--mode" not in a)
         elif agent == "agy":
-            ok = _pair(a, "--mode", "accept-edits") and "--sandbox" in a
+            ok = _pair(a, "--mode", "auto") and "--sandbox" in a and "--add-dir" in a
         if not ok:
             raise Refused(f"internal guard: {agent} argv lacks its auto-mode permission flag")
         return

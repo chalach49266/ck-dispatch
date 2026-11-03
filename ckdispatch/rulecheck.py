@@ -31,6 +31,9 @@ PATTERNS = [
     ("permission_bypass", re.compile(
         r"auto-approving all tool permissions|bypassPermissions|dangerously-skip-permissions|--yolo\b", re.I)),
 ]
+# agy print mode on chalach's account (2026-11-03): "--mode auto is not available for this account; continuing in
+# the default mode". For an agy auto run that is expected (default mode is stricter than auto): a note, not a flag.
+AGY_AUTO_FALLBACK = re.compile(r"--mode auto is not available for this account", re.I)
 STDERR_PATTERNS = [
     ("mode_ignored", re.compile(r"not supported in print mode|continuing in the default mode", re.I)),
     ("permission_bypass", re.compile(r"auto-approving all tool permissions", re.I)),
@@ -144,9 +147,9 @@ def classify(cfg: Config, ws: Workspace, mode: str, scopes: list, changed: list,
     return {"violations": violations, "flags": flags, "notes": notes, "changed_in_scope": sorted(set(in_scope))}
 
 
-def scan_transcript(parsed: dict, stdout: str, stderr: str) -> dict:
+def scan_transcript(parsed: dict, stdout: str, stderr: str, agent: str | None = None, mode: str | None = None) -> dict:
     """Actions (commands, tool inputs) count as attempts -> violation. Free text only -> flag."""
-    violations, flags = [], []
+    violations, flags, notes = [], [], []
     if parsed.get("actions"):
         for a in parsed["actions"]:
             text = f"{a.get('tool')}: {a.get('input')}"
@@ -169,8 +172,13 @@ def scan_transcript(parsed: dict, stdout: str, stderr: str) -> dict:
         m = rx.search(stderr or "")
         if m:
             msg = f"{cat} on stderr: {_excerpt(stderr, m)}"
+            if cat == "mode_ignored" and agent == "agy" and mode == "auto" and AGY_AUTO_FALLBACK.search(stderr or "") \
+                    and not re.search(r"not supported in print mode", stderr or "", re.I):
+                notes.append("agy print mode: --mode auto is not available for this account, so agy ran in its "
+                             "default mode (stricter than auto); the post-run Claude review still checks the run")
+                continue
             (violations if cat == "permission_bypass" else flags).append(msg)
-    return {"violations": violations, "flags": flags}
+    return {"violations": violations, "flags": flags, "notes": notes}
 
 
 def _excerpt(text: str, m, width: int = 60) -> str:

@@ -76,14 +76,20 @@ can never pass them itself (`check_ck_argv` still refuses `--auto-review`, `--pe
 | claude | `--permission-mode auto`; settings deny Edit/Write on raw folders and rule files |
 | codex | `-s workspace-write -c approval_policy="on-request" -c approvals_reviewer="auto_review" -m gpt-6.1-sol` (live adds `-a on-request`) |
 | cursor | `--trust --sandbox enabled --force` (allow-all) + **mandatory Claude review** |
-| agy | `--sandbox --mode accept-edits` (never asks before an edit) + **mandatory Claude review** |
+| agy | `--sandbox --mode auto --add-dir <workspace root> --add-dir <run folder>` (no prompts for reads or edits there) + **mandatory Claude review** |
 
 **Cursor auto = allow-all + mandatory Claude review, approved by chalach on 2026-11-03** ("do cursor allow everything
 setting and also have claude code check ... if it is anything important but otherwise always allow"), and **the
 same for agy** ("allow agy to edit any file"). Cursor gets its allow-all flag `--force` (`agent --help`: "Force allow
-commands unless explicitly denied") instead of `--auto-review`. agy gets `--mode accept-edits` (auto-approves edits);
-its `--mode auto` is "not available for this account" and fell back to asking before every edit. Both keep their
-sandbox and `--trust`, and run in the task folder (cwd/`--workspace` = the first write scope, else the workspace).
+commands unless explicitly denied") instead of `--auto-review`. agy (chalach, later the same day: "agy still asks
+permission for the Device Fabrication folder ... pass agy --mode auto plus --add-dir for the workspace root and the run
+folder") gets `--mode auto --add-dir <workspace root> --add-dir <run folder>` in headless and `--live` runs, so it never
+prompts for reads or edits inside them (the cwd is the task folder; the root is not repeated when it is the cwd).
+Interactive agy shows "Auto mode: edits & safe commands auto-approved" (checked 2026-11-03). In print mode agy says
+"--mode auto is not available for this account; continuing in the default mode"; for agy auto runs the rule check keeps
+that as a note, not a flag. Raw folders stay protected by the rule check and the post-run review, not by agy. Both
+keep their sandbox (cursor also `--trust`), and run in the task folder (cwd/`--workspace` = the first write scope,
+else the workspace).
 `-f`, `--yolo` and agy's `--dangerously-skip-permissions` stay refused, and CK can never pass `--force` itself.
 
 **Post-run review** (`ckdispatch/postreview.py`), after every cursor or agy auto run, headless or `--live`:
@@ -141,7 +147,7 @@ activated, and every fallback is loud (see below).
 | claude | `--strict-mcp-config --settings <run>/claude-settings-live.json --session-id <uuid> --add-dir <run> [--add-dir <scope>] [--allowedTools ...] --permission-mode plan\|acceptEdits` | positional `[prompt]` |
 | codex | `-C <ws\|scope> -s read-only\|workspace-write [-c sandbox_workspace_write.network_access=false --add-dir <run>] -a on-request` | positional `[PROMPT]` |
 | cursor | `--trust --sandbox enabled [--mode plan] --workspace <ws\|scope> --add-dir <run>` | positional `[prompt...]` |
-| agy | `--sandbox --mode plan\|accept-edits --add-dir <run>` | `-i <prompt>` (`--prompt-interactive`) |
+| agy | `--sandbox --mode plan\|accept-edits\|auto --add-dir <run>` (auto also `--add-dir <workspace root>`) | `-i <prompt>` (`--prompt-interactive`) |
 
 - No `-p`/`exec`/`--output-format`/`--json-schema` (interactive mode has none), and still no
   skip-permissions/yolo/force/full-auto/bypass flag. The same argv guard checks the live argv.
@@ -290,7 +296,9 @@ the title format; iTerm2 runs live.sh as the session command (no `write text`, n
 profile; the dynamic profiles (title locked, 4 tab colors); default-profile case; `live_window_opened` and
 `live_fallback` ledger events with the window id, the reason and the window's last lines; iTerm2 → Terminal → headless.
 Cursor/agy auto (`tests/test_postreview.py`, 2026-11-03): cursor gets `--force` (headless and live) and agy
-`--mode accept-edits`; `--force` only for a cursor auto argv built by ck-run (never `-f`/`--yolo`, never from CK);
+`--mode auto` with `--add-dir` for the workspace root and the run folder (headless and live; never
+`--dangerously-skip-permissions`), its print-mode "auto not available" warning is a note; `--force` only for a cursor
+auto argv built by ck-run (never `-f`/`--yolo`, never from CK);
 the review runs read-only (plan mode, run folder added, task folder as cwd, no secrets); `ok` review → ledger
 `cursor_review`/`agy_review` `ok`; Claude `flagged` → exit 4, loud stderr warning, summary line 1; a review that
 fails or times out is flagged; hard facts flag even when Claude says ok (deleted file, raw-folder and outside

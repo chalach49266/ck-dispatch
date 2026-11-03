@@ -248,7 +248,7 @@
     <ul>
       <li><b>Read-only by default.</b> An edit needs your words + time (<code>--approved</code>) and a folder (<code>--write-scope</code>).</li>
       <li><b>Refused before anything runs:</b> skip-permissions, bypass, yolo, <code>--force</code>, auto, full-access, and any permission flag from CK.</li>
-      <li><b>Cursor auto = allow-all (<code>--force</code>) + mandatory Claude review; agy auto = accept-edits + the same review</b> (approved by chalach, 2026-11-03). Flags writes outside the task folder, raw folders, deletions, push, uploads, credentials, paid cloud.</li>
+      <li><b>Cursor auto = allow-all (<code>--force</code>) + mandatory Claude review; agy auto = <code>--mode auto</code> + workspace &amp; run folder dirs + the same review</b> (approved by chalach, 2026-11-03). Flags writes outside the task folder, raw folders, deletions, push, uploads, credentials, paid cloud.</li>
       <li><b>Raw folders are read-only</b> (real path checked too). NV: agents write only in <code>NV Project/</code>; <code>AQS/</code> is raw.</li>
       <li><b>No credentials:</b> clean env, no keys. Claude is denied <code>~/.ssh</code>, <code>.env</code>, <code>*auth*</code>, <code>*credential*</code>, keychains.</li>
       <li><b>No push, deploy or send;</b> no paid cloud sims; no venv or clone in OneDrive.</li>

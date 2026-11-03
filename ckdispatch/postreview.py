@@ -1,7 +1,7 @@
 """Mandatory post-run review of cursor and agy auto runs (approved by chalach on 2026-11-03).
 
-Cursor auto runs with its allow-all flag (--force) and agy auto with --mode accept-edits, so neither stops to
-ask before acting. After every such run (headless or --live) ck-run:
+Cursor auto runs with its allow-all flag (--force) and agy auto with --mode auto plus the workspace root and
+the run folder as --add-dir, so neither stops to ask before acting there. After every such run (headless or --live) ck-run:
   1. collects the evidence into <run>/review-input.md (data only, written by ck-run):
      - files changed since the run started (rulecheck's mtime scan), marked in / outside the task folder
      - files that disappeared (a name listing of the scanned folders before and after the run)
@@ -374,7 +374,8 @@ def write_inputs(paths: dict, ev: dict, *, agent: str, ws: Workspace, scopes: li
 
 def review_prompt(*, agent: str, run_id: str, run_dir: str, folders: list, paths: dict, run_paths: dict) -> str:
     how = {"cursor": "Cursor CLI with --force (allow-all: it never asked before running commands or editing)",
-           "agy": "Antigravity agy with --mode accept-edits (it never asked before editing)"}.get(agent, agent)
+           "agy": "Antigravity agy with --mode auto and the workspace root and run folder added (no prompts for "
+                  "reads or edits there)"}.get(agent, agent)
     return "\n".join([
         f"CK POST-RUN REVIEW of run {run_id}. The agent was {how}.",
         "You are a short, READ-ONLY safety check. Do not change, create or delete any file. Do not run commands "

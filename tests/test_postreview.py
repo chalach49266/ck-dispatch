@@ -53,23 +53,57 @@ class TestAllowAllFlags(ReviewBase):
         self.assertIn("allow-all (--force)", call["prompt"])
         self.assertIn("read-only Claude Code review checks this run", call["prompt"])
 
-    def test_agy_auto_accepts_edits_without_asking(self):
+    def test_agy_auto_gets_auto_mode_and_the_workspace_and_run_folder(self):
+        # chalach 2026-11-03: "agy still asks permission for the Device Fabrication folder ... pass agy --mode auto
+        # plus --add-dir for the workspace root and the run folder (both headless and live)"
         p = self.auto("agy")
         self.assertEqual(p.returncode, 0, p.stderr)
-        a = [c for c in self.sb.calls() if c["agent"] == "agy"][-1]["argv"]
-        self.assertIn(["--mode", "accept-edits"], pairs(a))
+        rd = os.path.join(self.sb.runs, self.sb.run_id_from(p))
+        call = [c for c in self.sb.calls() if c["agent"] == "agy"][-1]
+        a = call["argv"]
+        self.assertIn(["--mode", "auto"], pairs(a))
+        self.assertIn(["--add-dir", self.sb.devfab], pairs(a))
+        self.assertIn(["--add-dir", rd], pairs(a))
         self.assertIn("--sandbox", a)
-        self.assertNotIn(["--mode", "auto"], pairs(a))
-        self.assertFalse(any("dangerously" in str(x) for x in a))
+        self.assertEqual(call["cwd"], os.path.realpath(self.scope))  # cwd stays the task folder
+        self.assertFalse(any("dangerously" in str(x) or "skip-permissions" in str(x) for x in a))
+        self.assertNotIn("accept-edits", a)
+
+    def test_agy_auto_without_scope_does_not_repeat_the_workspace(self):
+        p = self.auto("agy", scope=False)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        call = [c for c in self.sb.calls() if c["agent"] == "agy"][-1]
+        self.assertEqual(call["cwd"], os.path.realpath(self.sb.devfab))
+        dirs = [b for a_, b in pairs(call["argv"]) if a_ == "--add-dir"]
+        self.assertEqual(dirs, [os.path.join(self.sb.runs, self.sb.run_id_from(p))])
+
+    def test_agy_print_mode_auto_fallback_is_a_note_not_a_flag(self):
+        warn = "warning: --mode auto is not available for this account; continuing in the default mode."
+        self.sb.control(agy={"stderr": warn})
+        p = self.auto("agy")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        res = self.sb.result(self.sb.run_id_from(p))
+        self.assertEqual(res["status"], "ok")
+        self.assertFalse(res["rulecheck"]["flags"])
+        self.assertTrue(any("--mode auto is not available" in n for n in res["rulecheck"]["notes"]))
+        # the same warning in read mode, or plan mode ignored, still flags
+        self.sb.control(agy={"stderr": "warning: --mode plan is not supported in print mode; continuing in the default mode."})
+        p = self.auto("agy")
+        self.assertEqual(p.returncode, 4, p.stderr)
 
     def test_live_argv_too(self):
         self.sb.window("run")
-        for agent, flag in (("cursor", "--force"), ("agy", "accept-edits")):
+        for agent, flag in (("cursor", ["--force"]), ("agy", ["--mode", "auto"])):
             with self.subTest(agent=agent):
                 p = self.sb.run(agent, "devfab", "--mode", "auto", "--write-scope", "Projects/Notes")
                 self.assertEqual(p.returncode, 0, p.stderr)
                 live_call = [c for c in self.sb.calls() if c["agent"] == agent and c["live"]][-1]
-                self.assertIn(flag, live_call["argv"])
+                self.assertTrue(any(live_call["argv"][i:i + len(flag)] == flag for i in range(len(live_call["argv"]))))
+                if agent == "agy":
+                    rd = os.path.join(self.sb.runs, self.sb.run_id_from(p))
+                    self.assertIn(["--add-dir", self.sb.devfab], pairs(live_call["argv"]))
+                    self.assertIn(["--add-dir", rd], pairs(live_call["argv"]))
+                    self.assertEqual(live_call["argv"][-2], "-i")
                 rid, evs = self.events(p)
                 self.assertEqual([e["event"] for e in evs],
                                  ["dispatch", "live_window_opened", f"{agent}_review", "result"])

@@ -352,7 +352,7 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
                   redacted(lv["cmd"], RESULT_SCHEMA, paths["prompt_live"])]
     if postreview.applies(spec.agent, spec.mode, spec.kind):
         lines += [f"# after the run: MANDATORY read-only Claude review ({spec.agent} auto = "
-                  f"{'--force, allow-all' if spec.agent == 'cursor' else '--mode accept-edits'}; chalach 2026-11-03):",
+                  f"{'--force, allow-all' if spec.agent == 'cursor' else '--mode auto + workspace/run --add-dir'}; chalach 2026-11-03):",
                   f"# claude -p --permission-mode plan --json-schema schema/review.schema.json over {run_dir}/review-input.md"
                   f" -> {run_dir}/review.md, ledger event {postreview.event_name(spec.agent)} ok|flagged"]
     cmd_txt = "\n".join(lines + [""])
@@ -525,9 +525,9 @@ def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, 
 
     scan = rulecheck.scan_changed(roots, marker_ns, cfg.scan_budget_s, cfg.scan_max_entries)
     cls = rulecheck.classify(cfg, ws, spec.mode, scopes, scan["changed"], run_dir)
-    tr = rulecheck.scan_transcript(parsed, stdout, stderr)
+    tr = rulecheck.scan_transcript(parsed, stdout, stderr, agent=spec.agent, mode=spec.mode)
     rc = {"violations": cls["violations"] + tr["violations"], "flags": cls["flags"] + tr["flags"],
-          "notes": cls["notes"], "changed_in_scope": cls["changed_in_scope"],
+          "notes": cls["notes"] + tr.get("notes", []), "changed_in_scope": cls["changed_in_scope"],
           "scan": {"roots": roots, "entries": scan["entries"],
                    "truncated": scan["truncated"], "seconds": scan["seconds"]}}
 
