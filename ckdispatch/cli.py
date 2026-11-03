@@ -29,7 +29,7 @@ def _parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("run", aliases=["dispatch"], help="dispatch one task to one agent")
     r.add_argument("--agent", required=True, choices=AGENTS)
-    r.add_argument("--workspace", required=True, help="devfab | nv")
+    r.add_argument("--workspace", required=True, help="devfab | nv | washu (or an alias from config/workspaces.json)")
     r.add_argument("--title", required=True, help="short task title (ledger, thread)")
     r.add_argument("--prompt-file", required=True, help="CK's task text")
     r.add_argument("--task-type", default="general", help=f"one of {', '.join(route.MATRIX)} (free form allowed)")

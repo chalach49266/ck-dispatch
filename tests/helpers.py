@@ -28,6 +28,16 @@ NV_FILES = [
     "NV Project/wiki/page.md", "CLAUDE.md", "AGENTS.md", "nv_magnetometer_project/data/run.csv",
     "AQS/brief.md", "output/slides/deck.md",
 ]
+# WashU HW (a folder with a space, outside OneDrive): theory II has solutions/ and prep/, quantum II only
+# solutions/, classical mechanics neither; the other courses in the config have no folder here at all.
+WASHU_FILES = [
+    "CLAUDE.md", "HW Brain/CLAUDE.md", "HW Brain/index.md", "HW Brain/maps/ai-retrieval-guide.md",
+    "HW Brain/questions/open-questions.md", "HW Brain/log.md",
+    "theory II WashU/PS9_5020/PS9_5020.tex", "theory II WashU/theory project plan.md",
+    "theory II WashU/solutions/PS9 notes.tex", "theory II WashU/prep/exam plan.md",
+    "quantum II WashU/PS4_5240/PS4_5240.tex", "quantum II WashU/solutions/PS4 check.py",
+    "classical mechanics WashU/HW1/HW1.pdf", ".claude/settings.local.json", "v242/Launcher/run.sh",
+]
 
 
 def _touch(path, text="x\n"):
@@ -44,6 +54,7 @@ class Sandbox:
         self.phd = os.path.join(self.onedrive, "Documents", "PhD")
         self.devfab = os.path.join(self.phd, "Device Fabrication")
         self.nv = os.path.join(self.phd, "NV Compact Magnetometer")
+        self.washu = os.path.join(self.home, "Downloads", "WashU HW")
         self.local = os.path.join(self.home, "PhD_local")
         self.runs = os.path.join(self.local, "agent_runs")
         self.stubs = os.path.join(self.tmp, "stubs")
@@ -53,6 +64,8 @@ class Sandbox:
             _touch(os.path.join(self.devfab, f))
         for f in NV_FILES:
             _touch(os.path.join(self.nv, f))
+        for f in WASHU_FILES:
+            _touch(os.path.join(self.washu, f))
         _touch(os.path.join(self.phd, "Other", "notes.md"))
         # a raw folder that is a symlink into ~/PhD_local (like Photonics_Ecosystem/repos)
         repos_real = os.path.join(self.local, "Device Fabrication", "Photonics_Ecosystem", "repos")
@@ -72,6 +85,10 @@ class Sandbox:
         cfg["bin_dirs"] = [self.stubs, "/usr/bin", "/bin"]
         cfg["workspaces"]["devfab"]["root"] = self.devfab
         cfg["workspaces"]["nv"]["root"] = self.nv
+        cfg["workspaces"]["washu"]["root"] = self.washu
+        for key, w in cfg["workspaces"].items():  # a new workspace must get a sandbox root here first
+            if not w["root"].startswith(self.tmp + os.sep):
+                raise RuntimeError(f"test config would use the real folder of workspace '{key}': {w['root']}")
         # --live stays on by default; the mock osascript fails unless a test says otherwise (see window())
         cfg["live"] = {"default": True, "osascript": os.path.join(self.stubs, "osascript"),
                        "start_timeout_s": 3, "early_exit_s": 20, "poll_s": 0.2}
@@ -98,6 +115,14 @@ class Sandbox:
         """Mock Terminal: 'run' (window runs live.sh), 'silent' (never starts), 'fail' (osascript error)."""
         with open(os.path.join(self.stubs, "osascript.json"), "w") as f:
             json.dump({"mode": mode}, f)
+
+    def set_live(self, **kw):
+        """Change the test config's live section, e.g. set_live(terminal="iTerm2")."""
+        with open(self.config) as f:
+            cfg = json.load(f)
+        cfg["live"].update(kw)
+        with open(self.config, "w") as f:
+            json.dump(cfg, f, indent=1)
 
     def osascript_calls(self):
         d = os.path.join(self.stubs, "osascript-calls")

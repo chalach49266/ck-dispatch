@@ -201,7 +201,8 @@ def validate_write_scopes(cfg: Config, ws: Workspace, agent: str, scopes: list, 
             for e in ws.protected_dirs:
                 if e.overlaps(p, rp):
                     raise Refused(f"write scope overlaps the read-only folder '{e.rel}' ({ws.raw_source or 'ck-run protected list'}): {p}")
-            if ws.writable_only and not any(e.matches(p, rp) for e in ws.writable_only):
+            # real path only: a symlink inside a writable folder cannot point the scope at read-only files
+            if ws.writable_only and not any(inside(rp, e.real) for e in ws.writable_only):
                 names = ", ".join(e.rel for e in ws.writable_only)
                 raise Refused(f"in {ws.name} agents may only write inside {names} ({ws.raw_source}): {p}")
         else:

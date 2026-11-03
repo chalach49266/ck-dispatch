@@ -44,7 +44,8 @@ def header(*, ws: Workspace, run_id: str, agent: str, kind: str, mode: str,
     raw = ", ".join(f"{e.rel}/" for e in ws.raw)
     if ws.writable_only:
         own = ", ".join(f"{e.rel}/" for e in ws.writable_only)
-        L.append(f"READ-ONLY: everything in this workspace except {own} The raw, human-owned sources are: {raw}")
+        L.append(f"READ-ONLY: everything in this workspace except {own}."
+                 + (f" The raw, human-owned sources are: {raw}" if raw else ""))
     else:
         L.append(f"READ-ONLY (raw, human-owned; never modify): {raw}")
     extra = ", ".join(f"{e.rel}/" for e in ws.extra)

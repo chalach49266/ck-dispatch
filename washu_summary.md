@@ -1,0 +1,5 @@
+- `washu` workspace added (config/workspaces.json; root "/Users/ckasemtantikul/Downloads/WashU HW", shared ledger ~/PhD_local/agent_runs, same keys as devfab/nv); `--workspace washu`, `WashU HW`, `washu-hw` accepted.
+- Course files read-only: writable_only = `<course>/solutions` + `<course>/prep` for the 7 courses; scopes judged by real path (no symlink escape); rulecheck flags changes elsewhere in every mode; Claude auto denies every other entry.
+- Auto (default) without --write-scope uses the solutions/prep folders that exist; none exist in the real WashU HW yet, so washu auto runs are refused until they are created (read mode works now).
+- Paths with spaces stay quoted end to end; the live iTerm2 launcher cds to the workspace root (read, Claude auto) or to the scope (codex auto), tested with the mock osascript.
+- tests/test_washu.py (11 tests, sandbox only, real folder never opened); full suite 76/76 OK; local commit on main, not pushed.

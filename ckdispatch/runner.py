@@ -108,6 +108,49 @@ class SlotLock:
         self.fds = []
 
 
+def default_auto_scopes(ws: Workspace) -> list:
+    """Auto mode without --write-scope. A writable-only workspace: those of its writable folders that exist
+    (washu: each course's solutions/ and prep/ that is there). Other workspaces: [] (the whole workspace
+    minus its read-only folders)."""
+    if not ws.writable_only:
+        return []
+    have = [e.literal for e in ws.writable_only if os.path.isdir(e.literal)]
+    if not have:
+        raise Refused(f"none of the writable folders of {ws.name} exists yet "
+                      f"({', '.join(e.rel for e in ws.writable_only)}); create the one you need, or use --mode read")
+    return have
+
+
+def outside_writable(ws: Workspace) -> tuple:
+    """(folders, files) of a writable-only workspace that exist now outside every writable folder and are
+    not on the way to one: the root's entries, then the entries of each folder that holds a writable folder
+    (a course folder holds solutions/ and prep/). Claude deny rules cannot reopen a folder inside a denied
+    one, so these are denied one by one. Entries made later are caught by the rule check after the run."""
+    keep = [e.literal for e in ws.writable_only]
+    dirs, files, stack = [], [], [ws.root]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as it:
+                entries = sorted(it, key=lambda x: x.name)
+        except OSError:
+            continue
+        for e in entries:
+            if any(inside(e.path, k) for k in keep):
+                continue
+            try:
+                is_link, is_dir = e.is_symlink(), e.is_dir()
+            except OSError:
+                is_link, is_dir = False, False
+            if is_dir and not is_link and any(inside(k, e.path) for k in keep):
+                stack.append(e.path)
+            else:
+                (dirs if is_dir else files).append(e.path)
+    if ws.real_root != ws.root:  # the same entries under the root's real path
+        dirs += [ws.real_root + p[len(ws.root):] for p in dirs]
+        files += [ws.real_root + p[len(ws.root):] for p in files]
+    return dirs, files
+
+
 def write_claude_settings(cfg: Config, path: str, live_run_dir: str | None = None, auto_ws=None) -> None:
     """Deny rules for one run. Headless: no edits anywhere in agent_runs. Live: the agent must write
     result.md and summary.md in its own run folder, so agent_runs is denied piece by piece instead: the
@@ -121,6 +164,10 @@ def write_claude_settings(cfg: Config, path: str, live_run_dir: str | None = Non
             # auto mode may edit its own workspace: deny only its raw/protected folders and rule files
             targets += [e.real for e in ws.protected_dirs] + [e.literal for e in ws.protected_dirs]
             deny += [f"Edit(/{e.real})" for e in ws.protected_files]
+            if ws.writable_only:  # e.g. washu: only <course>/solutions and <course>/prep stay open
+                dirs, files = outside_writable(ws)
+                targets += dirs
+                deny += [f"Edit(/{p})" for p in files]
             continue
         targets += [ws.root, ws.real_root]
         targets += [e.real for e in ws.protected_dirs if not inside(e.real, ws.real_root)]
@@ -255,7 +302,7 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
         elif spec.mode == "auto":
             if spec.kind == "review":
                 raise Refused("reviews are read-only")
-            scopes_in = spec.scopes_in or [e.literal for e in ws.writable_only]  # writable-only workspaces
+            scopes_in = spec.scopes_in or default_auto_scopes(ws)
             scopes = validate_write_scopes(cfg, ws, spec.agent, scopes_in, AUTO_AREAS) if scopes_in else []
         elif spec.mode == "read":
             if spec.scopes_in:

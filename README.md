@@ -13,7 +13,7 @@ not run live (the `merge-gate` mod in Claude Code denies `codex exec`). **Live v
 ## Commands
 
 ```
-ck-run run    --agent claude|codex|cursor|agy --workspace devfab|nv --title T --prompt-file F
+ck-run run    --agent claude|codex|cursor|agy --workspace devfab|nv|washu --title T --prompt-file F
               [--task-type T] [--model M] [--read-dir D]... [--timeout S] [--parent RUN_ID] [--lead L]
               [--mode auto|read|edit] [--write-scope FOLDER ...] [--interactive]
               (edit also needs --approved "<user's words + time>")
@@ -139,7 +139,7 @@ The default comes from `live.default` in `config/workspaces.json`.
   `.claude/`, `.cursor/`, `.obsidian/`, `.venv/` (and NV `.agents/`, venvs, `qick-dawg (backup)/`);
   any `.git`, `.venv`, `venv`, `node_modules` path; `~/PhD_local` itself, `ck-dispatch`, `agent_runs`,
   `grok-bot-agents` and the `~/PhD_local` copies of workspace trees; other OneDrive folders; in NV,
-  anything outside `NV Project/`.
+  anything outside `NV Project/`; in WashU HW, anything outside a course's `solutions/` or `prep/`.
 - Enforcement: codex's OS sandbox lets it write only in `-C <scope>` (network off). Cursor and agy start in
   the scope with their sandbox on. Claude gets deny rules. After every run the rule check looks at the disk.
 - An edit run locks its workspace (no other run there at the same time). Read runs: at most 2 per workspace.
@@ -156,7 +156,12 @@ The default comes from `live.default` in `config/workspaces.json`.
   `qick/`, `qick-dawg/`, `PYNQ/`, `Archive/`. Agents may write only in `NV Project/`.
   **Note:** `AQS/` is raw by these rules, so no agent can edit AQS through ck-run. To change that, edit
   `config/workspaces.json`.
-- Rule files are protected in both workspaces (a change to them inside a scope is a violation).
+- **WashU HW** (`washu`, `~/Downloads/WashU HW`, not in OneDrive; `CLAUDE.md:67-75` "Ownership" and chalach
+  2026-11-02): the original course files are read-only. Agents may write only in `<course>/solutions/` and
+  `<course>/prep/` of the seven course folders (`writable_only`; add a pair when a course is added). Auto mode
+  without `--write-scope` uses those that exist and is refused if none does; Claude auto gets a deny rule for
+  every other entry; the rule check flags any change elsewhere. Runs go to the shared ledger in `agent_runs`.
+- Rule files are protected in every workspace (a change to them inside a scope is a violation).
 
 ## Run folder: `~/PhD_local/agent_runs/<run_id>/` (mode 700)
 

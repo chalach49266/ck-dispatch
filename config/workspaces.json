@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_note": "Paths may start with ~. Folder lists are relative to each workspace root. raw_readonly comes from the workspace rule files (see raw_source); extra_protected_dirs are ck-run additions (agent configs, skill mirrors, environments, backups). Forbidden flags and edit permissions per agent are in code (ckdispatch/guards.py, ckdispatch/flags.py), not here.",
+  "_note": "Paths may start with ~. Folder lists are relative to each workspace root. raw_readonly comes from the workspace rule files (see raw_source); extra_protected_dirs are ck-run additions (agent configs, skill mirrors, environments, backups). A non-empty writable_only lists the ONLY folders agents may change in that workspace (everything else there is read-only; washu: <course>/solutions and <course>/prep, one pair per course; add a pair when a course is added). All workspaces share one ledger: runs_dir. Forbidden flags and edit permissions per agent are in code (ckdispatch/guards.py, ckdispatch/flags.py), not here.",
   "onedrive_root": "~/Library/CloudStorage/OneDrive-WashingtonUniversityinSt.Louis",
   "local_root": "~/PhD_local",
   "runs_dir": "~/PhD_local/agent_runs",
@@ -84,6 +84,39 @@
         "CLAUDE.md",
         "NV Project/CLAUDE.md",
         "NV Project/AGENTS.md"
+      ]
+    },
+    "washu": {
+      "name": "WashU HW",
+      "aliases": ["washu", "washu-hw", "WashU", "WashU HW"],
+      "root": "/Users/ckasemtantikul/Downloads/WashU HW",
+      "wiki_first": ["HW Brain/index.md", "HW Brain/maps/ai-retrieval-guide.md"],
+      "open_questions": "HW Brain/questions/open-questions.md",
+      "rule_files": ["CLAUDE.md", "HW Brain/CLAUDE.md"],
+      "raw_source": "WashU HW/CLAUDE.md:67-75 ('Ownership': the user owns the course folders, answers, PDFs and textbooks) and chalach 2026-11-02 (washu task): original course files are read-only; agents edit only <course>/solutions and <course>/prep",
+      "raw_readonly": [],
+      "extra_protected_dirs": [".claude", ".obsidian", ".vscode", "v242"],
+      "writable_only": [
+        "theory II WashU/solutions",
+        "theory II WashU/prep",
+        "quantum II WashU/solutions",
+        "quantum II WashU/prep",
+        "stats mech WashU/solutions",
+        "stats mech WashU/prep",
+        "quantum hardware WashU/solutions",
+        "quantum hardware WashU/prep",
+        "classical mechanics WashU/solutions",
+        "classical mechanics WashU/prep",
+        "quantum information WashU/solutions",
+        "quantum information WashU/prep",
+        "AI physics WashU/solutions",
+        "AI physics WashU/prep"
+      ],
+      "protected_files": [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "HW Brain/CLAUDE.md",
+        "HW Brain/AGENTS.md"
       ]
     }
   }
