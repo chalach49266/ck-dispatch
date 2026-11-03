@@ -266,7 +266,7 @@ class TestControl(Base):
 
 class TestRefusals(Base):
     FORBIDDEN = [
-        ["--dangerously-skip-permissions"], ["--mode", "auto"], ["--mode", "bypassPermissions"], ["--mode=yolo"],
+        ["--dangerously-skip-permissions"], ["--mode", "bypassPermissions"], ["--mode=yolo"],
         ["--force"], ["-f"], ["--yolo"], ["--permission-mode", "bypassPermissions"], ["--permission-mode", "plan"],
         ["-s", "danger-full-access"], ["--sandbox", "danger-full-access"], ["--full-access"], ["--full-auto"],
         ["bypassPermissions"], ["yolo"], ["--model", "yolo-1"], ["--approval-mode", "auto"], ["--auto"],

@@ -1,5 +1,15 @@
 """Per-agent argv map. There is no code path that emits a forbidden flag.
 
+Auto mode (DEFAULT since 2026-11-02, chalach approved 10:34 PM CT): each agent's own safety-reviewed auto
+mode. Writes go to the --write-scope folders if given, else the workspace minus its raw/protected folders
+(rulecheck enforces both). Never a full bypass:
+
+  claude  auto: -p ... --settings <run>/claude-settings.json --permission-mode auto [--add-dir <scope>]
+  codex   auto: exec ... -C <scope|ws> -s workspace-write -c approval_policy="on-request"
+                -c approvals_reviewer="auto_review" -m <model|gpt-6.1-sol> -     (= --approve-for-me)
+  cursor  auto: -p --output-format json --trust --sandbox enabled --auto-review --workspace <scope|ws> <prompt>
+  agy     auto: --output-format json --sandbox ... --mode auto -p <prompt>
+
 Read mode (default) and edit mode (only with --approved and --write-scope):
 
   claude  read: -p --permission-mode plan --strict-mcp-config --output-format stream-json --verbose
@@ -43,6 +53,10 @@ EDIT_AREAS = {
 }
 PROMPT_ON_STDIN = {"claude": True, "codex": True, "cursor": False, "agy": False}
 SCHEMA_ENFORCED_BY_FLAG = {"claude": True, "codex": True, "cursor": False, "agy": False}
+MODES = ("auto", "read", "edit")
+AUTO_AREAS = {a: ["workspace", "local"] for a in AGENTS}   # where an auto-mode --write-scope may point
+CODEX_AUTO_MODEL = "gpt-6.1-sol"  # chalach: Astra 6 only for complex tasks (pass --model gpt-6-astra)
+CODEX_AUTO_CONFIG = ["-c", 'approval_policy="on-request"', "-c", 'approvals_reviewer="auto_review"']
 
 
 class _Prompt:
@@ -78,7 +92,7 @@ def build(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, mo
           claude_settings_path: str, binary: str | None = None) -> Command:
     if agent not in AGENTS:
         raise Refused(f"unknown agent '{agent}'; use one of: {', '.join(AGENTS)}")
-    if mode not in ("read", "edit"):
+    if mode not in MODES:
         raise Refused(f"forbidden mode '{mode}'")
     if mode == "edit" and not scopes:
         raise Refused("edit mode needs a validated write scope")
@@ -86,12 +100,17 @@ def build(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, mo
     with open(schema_path, encoding="utf-8") as f:
         schema_inline = json.dumps(json.load(f), separators=(",", ":"))
     scope_paths = [s["path"] for s in scopes]
+    root = scope_paths[0] if scope_paths else ws.root  # auto: first scope, else the workspace
     a = [binary]
     if agent == "claude":
         a += ["-p", "--output-format", "stream-json", "--verbose", "--strict-mcp-config",
               "--json-schema", schema_inline, "--settings", claude_settings_path]
         if mode == "read":
             a += ["--permission-mode", "plan"]
+        elif mode == "auto":
+            a += ["--permission-mode", "auto"]
+            for s in scope_paths:
+                a += ["--add-dir", s]
         else:
             a += ["--permission-mode", "acceptEdits", "--allowedTools", "Read,Grep,Glob,Edit,Write,Bash(pytest:*)"]
             for s in scope_paths:
@@ -106,20 +125,30 @@ def build(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, mo
         if mode == "read":
             a += ["-C", ws.root, "-s", "read-only"]
             cwd = ws.root
+        elif mode == "auto":
+            a += ["-C", root, "-s", "workspace-write"] + CODEX_AUTO_CONFIG
+            for s in scope_paths[1:]:
+                a += ["--add-dir", s]
+            cwd = root
         else:
             a += ["-C", scope_paths[0], "-s", "workspace-write",
                   "-c", "sandbox_workspace_write.network_access=false"]
             for s in scope_paths[1:]:
                 a += ["--add-dir", s]
             cwd = scope_paths[0]
-        if model:
-            a += ["-m", model]
+        if model or mode == "auto":
+            a += ["-m", model or CODEX_AUTO_MODEL]
         a += ["-"]  # read the prompt from stdin
     elif agent == "cursor":
         a += ["-p", "--output-format", "json", "--trust", "--sandbox", "enabled"]
         if mode == "read":
             a += ["--mode", "plan", "--workspace", ws.root]
             cwd = ws.root
+        elif mode == "auto":
+            a += ["--auto-review", "--workspace", root]
+            for s in scope_paths[1:]:
+                a += ["--add-dir", s]
+            cwd = root
         else:
             a += ["--workspace", scope_paths[0]]
             for s in scope_paths[1:]:
@@ -137,6 +166,11 @@ def build(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, mo
         if mode == "read":
             a += ["--mode", "plan"]
             cwd = ws.root
+        elif mode == "auto":
+            a += ["--mode", "auto"]
+            for s in scope_paths[1:]:
+                a += ["--add-dir", s]
+            cwd = root
         else:
             a += ["--mode", "accept-edits"]
             for s in scope_paths[1:]:
@@ -148,7 +182,7 @@ def build(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, mo
             a += ["--model", model]
         a += ["-p", PROMPT]
     _assert_invariants(agent, mode, a)
-    check_child_argv(a, PROMPT)
+    check_child_argv(a, PROMPT, auto=mode == "auto")
     return Command(agent, a, cwd, PROMPT_ON_STDIN[agent], binary)
 
 
@@ -171,29 +205,35 @@ def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: lis
     """
     if agent not in AGENTS:
         raise Refused(f"unknown agent '{agent}'; use one of: {', '.join(AGENTS)}")
-    if mode not in ("read", "edit"):
+    if mode not in MODES:
         raise Refused(f"forbidden mode '{mode}'")
     if mode == "edit" and not scopes:
         raise Refused("edit mode needs a validated write scope")
     binary = binary or resolve_binary(cfg, agent)
     scope_paths = [s["path"] for s in scopes]
+    root = scope_paths[0] if scope_paths else ws.root  # auto: first scope, else the workspace
     a = [binary]
     if agent == "claude":
         a += ["--strict-mcp-config", "--settings", claude_settings_path]
         if session_id:
             a += ["--session-id", session_id]
-        for d in [run_dir] + (scope_paths if mode == "edit" else []) + list(extra_read_dirs):
+        for d in [run_dir] + (scope_paths if mode != "read" else []) + list(extra_read_dirs):
             a += ["--add-dir", d]
         if mode == "edit":
             a += ["--allowedTools", "Read,Grep,Glob,Edit,Write,Bash(pytest:*)"]
         if model:
             a += ["--model", model]
-        a += ["--permission-mode", "plan" if mode == "read" else "acceptEdits"]
+        a += ["--permission-mode", {"read": "plan", "edit": "acceptEdits", "auto": "auto"}[mode]]
         cwd = ws.root
     elif agent == "codex":
         if mode == "read":
             a += ["-C", ws.root, "-s", "read-only"]  # writes outside the sandbox need the user's approval
             cwd = ws.root
+        elif mode == "auto":
+            a += ["-C", root, "-s", "workspace-write"] + CODEX_AUTO_CONFIG
+            for s in scope_paths[1:] + [run_dir]:
+                a += ["--add-dir", s]
+            cwd = root
         else:
             a += ["-C", scope_paths[0], "-s", "workspace-write",
                   "-c", "sandbox_workspace_write.network_access=false"]
@@ -201,13 +241,18 @@ def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: lis
                 a += ["--add-dir", s]
             cwd = scope_paths[0]
         a += ["-a", "on-request"]
-        if model:
-            a += ["-m", model]
+        if model or mode == "auto":
+            a += ["-m", model or CODEX_AUTO_MODEL]
     elif agent == "cursor":
         a += ["--trust", "--sandbox", "enabled"]
         if mode == "read":
             a += ["--mode", "plan", "--workspace", ws.root]
             cwd = ws.root
+        elif mode == "auto":
+            a += ["--auto-review", "--workspace", root]
+            for s in scope_paths[1:]:
+                a += ["--add-dir", s]
+            cwd = root
         else:
             a += ["--workspace", scope_paths[0]]
             for s in scope_paths[1:]:
@@ -218,13 +263,13 @@ def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: lis
         if model:
             a += ["--model", model]
     else:  # agy
-        a += ["--sandbox", "--mode", "plan" if mode == "read" else "accept-edits"]
+        a += ["--sandbox", "--mode", {"read": "plan", "edit": "accept-edits", "auto": "auto"}[mode]]
         if mode == "read":
             cwd = ws.root
         else:
             for s in scope_paths[1:]:
                 a += ["--add-dir", s]
-            cwd = scope_paths[0]
+            cwd = root
         for d in [run_dir] + list(extra_read_dirs):
             a += ["--add-dir", d]
         if model:
@@ -232,7 +277,7 @@ def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: lis
         a += ["-i"]  # --prompt-interactive: run the prompt, then stay in the session
     a += [PROMPT]
     _assert_invariants(agent, mode, a, live=True)
-    check_child_argv(a, PROMPT)
+    check_child_argv(a, PROMPT, auto=mode == "auto")
     return Command(agent, a, cwd, False, binary)
 
 
@@ -243,6 +288,19 @@ def _pair(a: list, flag: str, value: str) -> bool:
 def _assert_invariants(agent: str, mode: str, a: list, live: bool = False) -> None:
     """Defence in depth: refuse if the built argv lacks the expected permission flag."""
     ok = True
+    if mode == "auto":
+        if agent == "claude":
+            ok = _pair(a, "--permission-mode", "auto") and "--settings" in a
+        elif agent == "codex":
+            ok = (_pair(a, "-s", "workspace-write") and _pair(a, "-c", 'approvals_reviewer="auto_review"')
+                  and _pair(a, "-c", 'approval_policy="on-request"'))
+        elif agent == "cursor":
+            ok = "--trust" in a and _pair(a, "--sandbox", "enabled") and "--auto-review" in a
+        elif agent == "agy":
+            ok = _pair(a, "--mode", "auto") and "--sandbox" in a
+        if not ok:
+            raise Refused(f"internal guard: {agent} argv lacks its auto-mode permission flag")
+        return
     if agent == "claude":
         ok = _pair(a, "--permission-mode", "plan" if mode == "read" else "acceptEdits") and "--settings" in a
     elif agent == "codex":

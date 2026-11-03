@@ -14,6 +14,7 @@
   "live": {
     "_note": "ck-run run/review --live (default below; --no-live turns it off): the agent runs in its own interactive CLI in a new Terminal window. start_timeout_s: how long to wait for the window to start the agent before falling back to headless. early_exit_s: an agent that exits this fast with an error also falls back.",
     "default": true,
+    "terminal": "iTerm2",
     "osascript": "/usr/bin/osascript",
     "start_timeout_s": 30,
     "early_exit_s": 20,

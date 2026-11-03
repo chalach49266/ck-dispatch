@@ -14,7 +14,7 @@ from .guards import check_ck_argv
 from .runner import Spec, execute, new_run_id, read_task_file, review_spec, valid_run_id
 
 
-LIVE_HELP = ("run the agent in its own interactive CLI in a new Terminal window (default on, from config "
+LIVE_HELP = ("run the agent in its own interactive CLI in a new iTerm2 or Terminal window (config live.terminal; --interactive = --live; default on, from config "
              "live.default); --no-live: headless only. If the window fails, the run falls back to headless")
 
 
@@ -34,15 +34,18 @@ def _parser() -> argparse.ArgumentParser:
     r.add_argument("--prompt-file", required=True, help="CK's task text")
     r.add_argument("--task-type", default="general", help=f"one of {', '.join(route.MATRIX)} (free form allowed)")
     r.add_argument("--model")
-    r.add_argument("--mode", choices=["read", "edit"], default="read")
+    r.add_argument("--mode", choices=["auto", "read", "edit"], default="auto",
+                   help="auto (default): each agent's safety-reviewed auto mode; read: plan/read-only; "
+                        "edit: accept-edits with --approved")
     r.add_argument("--approved", help="edit only: the user's approval, in their words, with the time")
-    r.add_argument("--write-scope", action="append", default=[], help="edit only: folder the agent may change (repeatable)")
+    r.add_argument("--write-scope", action="append", default=[],
+                   help="auto/edit: folder the agent may change (repeatable; auto default = workspace minus raw folders)")
     r.add_argument("--read-dir", action="append", default=[], help="read only: extra folder to read (repeatable)")
     r.add_argument("--timeout", type=int, help="seconds")
     r.add_argument("--parent", help="run id this task follows up")
     r.add_argument("--lead", help="lead bot that supplied the domain context")
     r.add_argument("--dry-run", action="store_true", help="check and print the agent command; run nothing")
-    r.add_argument("--live", action=argparse.BooleanOptionalAction, default=None, help=LIVE_HELP)
+    r.add_argument("--live", "--interactive", dest="live", action=argparse.BooleanOptionalAction, default=None, help=LIVE_HELP)
     r.set_defaults(func=cmd_run)
 
     v = sub.add_parser("review", help="cross-review a finished run by another agent (sends file paths, not content)")
@@ -54,7 +57,7 @@ def _parser() -> argparse.ArgumentParser:
     v.add_argument("--model")
     v.add_argument("--timeout", type=int)
     v.add_argument("--dry-run", action="store_true")
-    v.add_argument("--live", action=argparse.BooleanOptionalAction, default=None, help=LIVE_HELP)
+    v.add_argument("--live", "--interactive", dest="live", action=argparse.BooleanOptionalAction, default=None, help=LIVE_HELP)
     v.set_defaults(func=cmd_review)
 
     t = sub.add_parser("thread", help="print the conversation chain of a run as markdown")

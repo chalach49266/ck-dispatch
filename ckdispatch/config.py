@@ -98,6 +98,7 @@ class Config:
         lv = d.get("live") or {}
         self.live_default = bool(lv.get("default", True))
         self.live_osascript = xp(lv.get("osascript", "/usr/bin/osascript"))
+        self.live_terminal = str(lv.get("terminal", "Terminal"))  # "iTerm2" or "Terminal"
         self.live_start_timeout_s = float(lv.get("start_timeout_s", 30))
         self.live_early_exit_s = float(lv.get("early_exit_s", 20))
         self.live_poll_s = float(lv.get("poll_s", 1.0))

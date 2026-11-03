@@ -28,6 +28,14 @@ def header(*, ws: Workspace, run_id: str, agent: str, kind: str, mode: str,
     if mode == "read":
         L.append("MODE: read-only. Do not create, change, move or delete any file anywhere"
                  + (f", except the two output files {outputs}." if live_outbox else "."))
+    elif mode == "auto":
+        where = "; ".join(s["path"] for s in scopes) or f"{ws.root} (except the read-only folders below)"
+        L.append(f"MODE: auto (your CLI's safety-reviewed auto mode). Run autonomously. Change files ONLY inside: {where}"
+                 + (f"; also write the two output files {outputs}." if live_outbox else ".")
+                 + " Make reasonable decisions yourself and mark unknowns (UNKNOWN / UNVERIFIED) instead of inventing."
+                 " Do not stop to wait for answers: list questions that truly need chalach's decision at the end of"
+                 " your output under 'Questions for chalach' (Grok Bot relays them). Keep PROGRESS.md in your"
+                 " working folder (done / remaining) so another agent can resume if usage limits hit.")
     else:
         where = "; ".join(s["path"] for s in scopes)
         L.append(f'MODE: edit, approved by the user ("{approved}"). Change files ONLY inside: {where}. '

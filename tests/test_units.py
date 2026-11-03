@@ -55,6 +55,42 @@ class TestArgvMap(unittest.TestCase):
                     self.assertNotIn(" auto ", f" {flat} ")
                     guards.check_child_argv(cmd.argv, PROMPT)  # does not raise
 
+    def test_auto_mode_flags_per_agent(self):
+        want = {"claude": [["--permission-mode", "auto"]],
+                "codex": [["-s", "workspace-write"], ["-c", 'approval_policy="on-request"'],
+                          ["-c", 'approvals_reviewer="auto_review"'], ["-m", "gpt-6.1-sol"]],
+                "agy": [["--mode", "auto"]]}
+        for agent in ("claude", "codex", "cursor", "agy"):
+            with self.subTest(agent=agent):
+                argv = self._build(agent, "auto").argv
+                flat = " ".join(str(x) for x in argv if x is not PROMPT).lower()
+                for pair in want.get(agent, []):
+                    self.assertIn(pair, pairs(argv), (agent, argv))
+                if agent == "cursor":
+                    self.assertIn("--auto-review", argv)
+                for bad in ("dangerously", "bypasspermissions", "yolo", "--force", "full-access", "full-auto",
+                            "skip-permissions", "approval_policy=never", 'approval_policy="never"'):
+                    self.assertNotIn(bad, flat)
+                guards.check_child_argv(argv, PROMPT, auto=True)  # allowed when ck-run injects them
+                with self.assertRaises(Refused):
+                    guards.check_child_argv(argv, PROMPT)  # same tokens refused outside auto
+
+    def test_auto_does_not_open_bypass_in_child_guard(self):
+        for bad in (["--dangerously-skip-permissions"], ["--permission-mode", "bypassPermissions"],
+                    ["--dangerously-bypass-approvals-and-sandbox"], ["--force"], ["--yolo"],
+                    ["-s", "danger-full-access"], ["-c", 'approval_policy="never"'], ["-c", "approval_policy=never"]):
+            with self.subTest(bad=bad):
+                with self.assertRaises(Refused):
+                    guards.check_child_argv(["claude", "-p", *bad, PROMPT], PROMPT, auto=True)
+
+    def test_ck_cannot_pass_auto_flags_itself(self):
+        guards.check_ck_argv(["run", "--mode", "auto"])  # the mode name is fine
+        for bad in (["--auto-review"], ["--permission-mode", "auto"], ["-c", 'approvals_reviewer="auto_review"'],
+                    ["--approve-for-me"], ["--mode", "bypassPermissions"], ["--yolo"], ["--force"]):
+            with self.subTest(bad=bad):
+                with self.assertRaises(Refused):
+                    guards.check_ck_argv(["run", "--mode", "auto", *bad])
+
     def test_permission_flags_per_agent(self):
         p = pairs(self._build("claude", "read").argv)
         self.assertIn(["--permission-mode", "plan"], p)
@@ -123,7 +159,7 @@ class TestCkArgv(unittest.TestCase):
         guards.check_ck_argv(["thread", "2026-11-02T163112-devfab-general-claude-ab12"])
 
     def test_forbidden_command_lines_fail(self):
-        for argv in (["run", "--dangerously-skip-permissions"], ["run", "--mode", "auto"], ["run", "--mode=full-auto"],
+        for argv in (["run", "--dangerously-skip-permissions"], ["run", "--mode=full-auto"],
                      ["run", "--yolo"], ["run", "--force"], ["run", "bypassPermissions"], ["run", "--full-access"],
                      ["run", "--permission-mode", "plan"], ["run", "-s", "workspace-write"], ["run", "--add-dir", "/"]):
             with self.subTest(argv=argv):

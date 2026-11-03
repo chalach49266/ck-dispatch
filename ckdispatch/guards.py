@@ -32,6 +32,14 @@ FORBIDDEN_SUBSTRINGS = (
     "api-key",
 )
 FORBIDDEN_FLAGS = {"-f", "--force", "--bare", "-w", "--worktree", "--auto"}
+# --mode auto (2026-11-02, chalach approved 10:34 PM CT): each agent's safety-reviewed auto mode. These tokens
+# are allowed ONLY in an argv that ck-run itself built for mode auto (check_child_argv(..., auto=True)).
+# CK can never pass them to ck-run (check_ck_argv still refuses them); full bypass stays refused always.
+AUTO_TOKENS = {"--auto-review"}                                   # cursor Smart Auto (server classifier)
+AUTO_MODE_VALUES = {"--permission-mode": {"auto"},                # claude auto mode (classifier)
+                    "--mode": {"auto"}}                           # agy auto (prompts on irreversible actions)
+AUTO_CONFIG_OVERRIDES = {'approval_policy="on-request"',          # codex: approvals routed to auto review
+                         'approvals_reviewer="auto_review"'}      # = --approve-for-me, not the bypass
 # Bare words that name a forbidden permission mode.
 FORBIDDEN_WORDS = {"auto", "bypasspermissions", "dontask", "yolo", "danger-full-access",
                    "full-access", "full-auto", "always-proceed"}
@@ -84,10 +92,14 @@ def check_ck_argv(argv: list) -> None:
             if bad:
                 raise Refused(f"forbidden flag {t}")
             if name in CK_PERMISSION_FLAGS:
-                raise Refused(f"{t} is not accepted: ck-run sets agent permissions itself (use --mode read|edit)")
+                raise Refused(f"{t} is not accepted: ck-run sets agent permissions itself (use --mode auto|read|edit)")
             value = val if eq else (str(argv[i + 1]) if i + 1 < len(argv) else None)
-            if name == "--mode" and value is not None and value.lower() not in ("read", "edit"):
-                raise Refused(f"forbidden mode '{value}': ck-run accepts only --mode read or --mode edit")
+            if name == "--mode" and value is not None:
+                if value.lower() not in ("read", "edit", "auto"):
+                    raise Refused(f"forbidden mode '{value}': ck-run accepts only --mode auto, read or edit")
+                if not eq:
+                    i += 2  # ck-run's own --mode auto is not the bare forbidden word 'auto'
+                    continue
             if name in MODEL_FLAGS and value is not None:
                 if _bad_substring(value) or value.lower() in (FORBIDDEN_WORDS - {"auto"}):
                     raise Refused(f"forbidden model value '{value}'")
@@ -101,18 +113,24 @@ def check_ck_argv(argv: list) -> None:
         i += 1
 
 
-def check_child_argv(argv: list, prompt_sentinel: object) -> None:
-    """Final check on the exact argv handed to an agent CLI. The prompt slot is skipped."""
+def check_child_argv(argv: list, prompt_sentinel: object, auto: bool = False) -> None:
+    """Final check on the exact argv handed to an agent CLI. The prompt slot is skipped.
+
+    auto=True only from flags.build/build_live for ck-run's own --mode auto: it admits exactly the
+    AUTO_* tokens above and nothing else; every bypass check still applies."""
     n = len(argv)
     for i, tok in enumerate(argv):
         if tok is prompt_sentinel:
             continue
         t = str(tok)
         low = t.lower()
+        prev = str(argv[i - 1]).lower() if i else ""
+        if auto and (low in AUTO_TOKENS or (low in {v for s in AUTO_MODE_VALUES.values() for v in s}
+                                            and prev in AUTO_MODE_VALUES)):
+            continue
         bad = _bad_substring(low)
         if bad:
             raise Refused(f"forbidden token in agent argv: {t[:80]} (contains '{bad}')")
-        prev = str(argv[i - 1]).lower() if i else ""
         if low.startswith("-"):
             name_orig, eq, _ = t.partition("=")
             val = low.partition("=")[2]
@@ -125,9 +143,11 @@ def check_child_argv(argv: list, prompt_sentinel: object) -> None:
                 nxt = val
             elif i + 1 < n and argv[i + 1] is not prompt_sentinel and not str(argv[i + 1]).startswith("-"):
                 nxt = str(argv[i + 1]).lower()
-            if name in MODE_VALUES and nxt is not None and nxt not in MODE_VALUES[name]:
+            allowed_vals = MODE_VALUES.get(name, set()) | (AUTO_MODE_VALUES.get(name, set()) if auto else set())
+            if name in MODE_VALUES and nxt is not None and nxt not in allowed_vals:
                 raise Refused(f"forbidden mode in agent argv: {name} {nxt}")
-            if name in CONFIG_FLAGS and (nxt is None or nxt not in ALLOWED_CONFIG_OVERRIDES):
+            overrides = ALLOWED_CONFIG_OVERRIDES | (AUTO_CONFIG_OVERRIDES if auto else set())
+            if name in CONFIG_FLAGS and (nxt is None or nxt not in overrides):
                 raise Refused(f"config override not allowed in agent argv: {t} {nxt}")
         elif low in FORBIDDEN_WORDS and prev not in MODEL_FLAGS:
             raise Refused(f"forbidden permission word in agent argv: {t}")

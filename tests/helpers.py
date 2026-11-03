@@ -143,8 +143,10 @@ class Sandbox:
                               text=True, timeout=timeout)
 
     def run(self, agent="claude", ws="devfab", *extra, title="Test task", task=None):
+        # ck-run's default is --mode auto (2026-11-02); older tests were written for read, so pin it unless given
+        mode = [] if any(str(x).startswith("--mode") for x in extra) else ["--mode", "read"]
         return self.ck("run", "--agent", agent, "--workspace", ws, "--title", title,
-                       "--prompt-file", task or self.task(), *extra)
+                       "--prompt-file", task or self.task(), *mode, *extra)
 
     def ledger(self):
         p = os.path.join(self.runs, "ledger.jsonl")

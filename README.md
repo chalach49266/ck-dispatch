@@ -15,7 +15,8 @@ not run live (the `merge-gate` mod in Claude Code denies `codex exec`). **Live v
 ```
 ck-run run    --agent claude|codex|cursor|agy --workspace devfab|nv --title T --prompt-file F
               [--task-type T] [--model M] [--read-dir D]... [--timeout S] [--parent RUN_ID] [--lead L]
-              [--mode edit --approved "<user's words + time>" --write-scope FOLDER [--write-scope ...]]
+              [--mode auto|read|edit] [--write-scope FOLDER ...] [--interactive]
+              (edit also needs --approved "<user's words + time>")
               [--live | --no-live] [--dry-run]
 ck-run review RUN_ID --by AGENT [--blind] [--focus TEXT] [--model M] [--timeout S] [--live | --no-live]
 ck-run thread RUN_ID [--no-summary]
@@ -46,7 +47,7 @@ slides_web, writing, quick_lookup, multi_file_diff, wiki_lint, general (Framewor
 | | Decision | Where in code |
 |---|---|---|
 | D1 | Codex may edit inside Device Fabrication / NV Compact Magnetometer after approval; raw folders are blocked | `flags.EDIT_AREAS`, `guards.validate_write_scopes` |
-| D2 | agy may edit after approval with `--mode accept-edits`; never auto or skip-permissions | `flags.build` |
+| D2 | agy may edit after approval with `--mode accept-edits`; `--mode auto` only when ck-run injects it (auto mode); never skip-permissions | `flags.build` |
 | D3 | Framework v3 goes in the real PhD folder later (not in this step) | none |
 | D4 | Cursor always gets `--trust`; `--mode plan` unless the edit is approved | `flags.build` |
 | (plan) | Claude edits only a `~/PhD_local` repo (its settings deny Edit on both workspaces) | `flags.EDIT_AREAS["claude"]` |
@@ -63,6 +64,29 @@ slides_web, writing, quick_lookup, multi_file_diff, wiki_lint, general (Framewor
 Every run: the agent gets a clean environment (HOME, USER, LOGNAME, LANG, LC_*, TERM, TMPDIR, SHELL, a fixed
 PATH, NO_COLOR; no keys, no tokens). Its process group is killed at the timeout. `cmd.txt` holds the
 command without the prompt body and without env values.
+
+## Auto mode (default since 2026-11-02; chalach approved 22:34 CST)
+
+`--mode auto` is the default. Each agent runs in its **own safety-reviewed auto mode**; ck-run injects the flags and
+the guards allow them only in the final child argv of an auto run (`check_child_argv(..., auto=True)`). CK/Grok Bot
+can never pass them itself (`check_ck_argv` still refuses `--auto-review`, `--permission-mode`, `-c`, ...).
+
+| agent | injected flags |
+|---|---|
+| claude | `--permission-mode auto`; settings deny Edit/Write on raw folders and rule files |
+| codex | `-s workspace-write -c approval_policy="on-request" -c approvals_reviewer="auto_review" -m gpt-6.1-sol` (live adds `-a on-request`) |
+| cursor | `--trust --sandbox enabled --auto-review` |
+| agy | `--sandbox --mode auto` |
+
+- Write area: `--write-scope` folders if given (same rules as edit mode, no `--approved` needed), else the workspace
+  root minus raw folders and protected rule files. rulecheck flags any change outside it, in a raw folder or a rule file.
+- Auto takes the workspace's exclusive lock (like edit). Reviews stay read-only.
+- The prompt tells the agent to work on its own, mark unknowns, keep `PROGRESS.md`, and end the summary with
+  "Questions for chalach" for Grok Bot to relay.
+- Still refused in every mode: bypassPermissions, `dangerously-*`, `--force`/`--yolo`, `danger-full-access`,
+  `approval_policy=never`, `--full-auto`.
+- `--interactive` (= `--live`) opens the run in an iTerm2 window (`live.terminal` in workspaces.json, falls back to Terminal).
+- `--mode read` keeps the old look-only behaviour (plan / read-only).
 
 ## Live mode (`--live`, default on; `--no-live` = headless only)
 

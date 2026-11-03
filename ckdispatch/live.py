@@ -43,6 +43,21 @@ APPLESCRIPT = [
     "end run",
 ]
 
+ITERM_APPLESCRIPT = [
+    "on run argv",
+    'tell application "iTerm"',
+    "activate",
+    "set w to (create window with default profile)",
+    "tell current session of w",
+    "try",
+    "set name to (item 2 of argv)",
+    "end try",
+    "write text (item 1 of argv)",
+    "end tell",
+    "end tell",
+    "end run",
+]
+
 UUID_RX = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 READ_CAP = 32 * 1024 * 1024
 
@@ -80,12 +95,23 @@ def write_script(path: str, **kw) -> None:
         f.write(script_text(**kw))
 
 
-def open_window(osascript: str, command: str, title: str, env: dict) -> tuple:
-    """(ok, error). Asks Terminal for a new window that runs `command`."""
+def open_window(osascript: str, command: str, title: str, env: dict, terminal: str = "Terminal") -> tuple:
+    """(ok, error). Asks iTerm2 (terminal="iTerm2") or Terminal for a new window that runs `command`.
+    If iTerm2 fails, Terminal is tried once before giving up."""
     if not (os.path.isfile(osascript) and os.access(osascript, os.X_OK)):
         return False, f"osascript not found: {osascript}"
+    if terminal.lower() in ("iterm", "iterm2"):
+        ok, err = _osa(osascript, ITERM_APPLESCRIPT, command, title, env)
+        if ok:
+            return ok, err
+        ok2, err2 = _osa(osascript, APPLESCRIPT, command, title, env)
+        return ok2, (None if ok2 else f"iTerm2: {err}; Terminal: {err2}")
+    return _osa(osascript, APPLESCRIPT, command, title, env)
+
+
+def _osa(osascript: str, script: list, command: str, title: str, env: dict) -> tuple:
     argv = [osascript]
-    for line in APPLESCRIPT:
+    for line in script:
         argv += ["-e", line]
     argv += [command, title]
     try:

@@ -18,7 +18,7 @@ from . import VERSION, ledger, live, route, rulecheck, summarize
 from . import prompt as P
 from .config import CLAUDE_GUARD_BASE, PACKET_SCHEMA, REPO, RESULT_SCHEMA, Config, Workspace, inside
 from .errors import Refused
-from .flags import AGENTS, EDIT_AREAS, SCHEMA_ENFORCED_BY_FLAG, build, build_live, redacted
+from .flags import AGENTS, AUTO_AREAS, EDIT_AREAS, SCHEMA_ENFORCED_BY_FLAG, build, build_live, redacted
 from .guards import child_env, validate_write_scopes
 from .schema import load as load_schema
 from .schema import validate
@@ -38,7 +38,7 @@ class Spec:
         self.task_source = kw.get("task_source")
         self.task_type = kw.get("task_type") or "general"
         self.model = kw.get("model")
-        self.mode = kw.get("mode") or "read"
+        self.mode = kw.get("mode") or "auto"
         self.approved = kw.get("approved")
         self.scopes_in = list(kw.get("scopes_in") or [])
         self.read_dirs = list(kw.get("read_dirs") or [])
@@ -108,7 +108,7 @@ class SlotLock:
         self.fds = []
 
 
-def write_claude_settings(cfg: Config, path: str, live_run_dir: str | None = None) -> None:
+def write_claude_settings(cfg: Config, path: str, live_run_dir: str | None = None, auto_ws=None) -> None:
     """Deny rules for one run. Headless: no edits anywhere in agent_runs. Live: the agent must write
     result.md and summary.md in its own run folder, so agent_runs is denied piece by piece instead: the
     ledger, state, locks, every other run folder that exists now, and ck-run's own files in this run."""
@@ -117,6 +117,11 @@ def write_claude_settings(cfg: Config, path: str, live_run_dir: str | None = Non
     deny = list(base["permissions"]["deny"])
     targets = []
     for ws in cfg.workspaces.values():
+        if auto_ws is not None and ws.key == auto_ws.key:
+            # auto mode may edit its own workspace: deny only its raw/protected folders and rule files
+            targets += [e.real for e in ws.protected_dirs] + [e.literal for e in ws.protected_dirs]
+            deny += [f"Edit(/{e.real})" for e in ws.protected_files]
+            continue
         targets += [ws.root, ws.real_root]
         targets += [e.real for e in ws.protected_dirs if not inside(e.real, ws.real_root)]
     run_bases = list(dict.fromkeys([cfg.runs_dir, os.path.realpath(cfg.runs_dir)]))
@@ -247,6 +252,11 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
             if spec.read_dirs:
                 raise Refused("--read-dir is only for read mode")
             scopes = validate_write_scopes(cfg, ws, spec.agent, spec.scopes_in, EDIT_AREAS)
+        elif spec.mode == "auto":
+            if spec.kind == "review":
+                raise Refused("reviews are read-only")
+            scopes_in = spec.scopes_in or [e.literal for e in ws.writable_only]  # writable-only workspaces
+            scopes = validate_write_scopes(cfg, ws, spec.agent, scopes_in, AUTO_AREAS) if scopes_in else []
         elif spec.mode == "read":
             if spec.scopes_in:
                 raise Refused("--write-scope is only for --mode edit")
@@ -289,7 +299,7 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
                      approved=spec.approved, scopes=scopes, live_outbox=run_dir),
             spec.title, spec.task_text,
             P.footer(run_id=spec.run_id, include_schema=True, schema_path=RESULT_SCHEMA, live_outbox=run_dir))
-        lines += [f"# live (default; --no-live for headless only): a Terminal window runs {paths['live_sh']},",
+        lines += [f"# live (default; --no-live for headless only): an {cfg.live_terminal} window runs {paths['live_sh']},",
                   f"# which starts the interactive CLI with env -i (same env, TERM from the window) and "
                   f"{paths['prompt_live']} as the first message. The command above is the fallback.",
                   redacted(lv["cmd"], RESULT_SCHEMA, paths["prompt_live"])]
@@ -298,7 +308,7 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
         sys.stdout.write(cmd_txt)
         return 0
 
-    lock = SlotLock(cfg, ws.key, exclusive=spec.mode == "edit")
+    lock = SlotLock(cfg, ws.key, exclusive=spec.mode in ("edit", "auto"))
     if not lock.acquire():
         note = f"{ws.name} already has {cfg.max_runs_per_workspace} run(s), or an edit run, in progress"
         ledger.append(cfg.runs_dir, **base, event="busy", status="busy", note=note, **{"from": spec.from_, "to": spec.agent})
@@ -326,7 +336,8 @@ def _live_phase(cfg, spec, ws, run_dir, paths, lv, env):
     live.write_script(paths["live_sh"], run_dir=run_dir, cwd=lv["cmd"].cwd, env=env, argv=lv["cmd"].argv,
                       prompt_path=paths["prompt_live"], title=title)
     t0 = time.time()
-    ok, err = live.open_window(cfg.live_osascript, f"/bin/bash {shlex.quote(paths['live_sh'])}", title, env)
+    ok, err = live.open_window(cfg.live_osascript, f"/bin/bash {shlex.quote(paths['live_sh'])}", title, env,
+                               terminal=cfg.live_terminal)
     if not ok:
         live.take_claim(run_dir)  # a window that opens anyway later finds the claim and does nothing
         info["window_error"] = err
@@ -385,16 +396,17 @@ def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, 
     _write(paths["prompt"], prompt_text)
     _write(paths["cmd"], cmd_txt)
     if spec.agent == "claude":
-        write_claude_settings(cfg, paths["settings"])
+        write_claude_settings(cfg, paths["settings"], auto_ws=ws if spec.mode == "auto" else None)
     if lv:
         _write(paths["prompt_live"], lv["prompt"])
         if spec.agent == "claude":
-            write_claude_settings(cfg, paths["settings_live"], live_run_dir=run_dir)
+            write_claude_settings(cfg, paths["settings_live"], live_run_dir=run_dir,
+                                  auto_ws=ws if spec.mode == "auto" else None)
     packet = {
         "run_id": spec.run_id, "kind": spec.kind, "parent_run_id": spec.parent_run_id, "from": spec.from_,
         "workspace": ws.key, "workspace_root": ws.root, "lead": spec.lead, "task_type": spec.task_type,
         "title": spec.title, "worker": spec.agent, "model": spec.model, "cwd": cmd.cwd,
-        "mode": "plan" if spec.mode == "read" else "edit-approved",
+        "mode": {"read": "plan", "edit": "edit-approved", "auto": "auto"}[spec.mode],
         "approved_actions": [spec.approved] if spec.mode == "edit" else [],
         "write_scope": [s["path"] for s in scopes], "deliverable": "result.md + result.json + summary.md",
         "budget": {"timeout_s": int(spec.timeout_s)}, "review": spec.review, "task_source": spec.task_source,

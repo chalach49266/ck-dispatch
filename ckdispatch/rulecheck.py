@@ -113,7 +113,10 @@ def classify(cfg: Config, ws: Workspace, mode: str, scopes: list, changed: list,
             continue
         raw = next((e for e in ws.protected_dirs if e.matches(p, rp)), None)
         pfile = next((e for e in ws.protected_files if p == e.literal or rp == e.real), None)
-        scoped = mode == "edit" and any(inside(rp, s["path"]) or inside(p, s["literal"]) for s in scopes)
+        if mode == "auto" and not scopes:  # auto without --write-scope: the workspace, minus raw/protected
+            scoped = inside(p, ws.root) or inside(rp, ws.real_root)
+        else:
+            scoped = mode in ("edit", "auto") and any(inside(rp, s["path"]) or inside(p, s["literal"]) for s in scopes)
         if c["dir"]:
             # A folder's own mtime moves when entries are added, removed or renamed (also by OneDrive sync).
             if raw:
@@ -129,6 +132,8 @@ def classify(cfg: Config, ws: Workspace, mode: str, scopes: list, changed: list,
             violations.append(f"protected rule file changed: {p}")
         elif mode == "read":
             violations.append(f"file changed during a read-only run: {p}")
+        elif mode == "auto" and not scoped:
+            violations.append(f"file changed outside the auto-mode write area: {p}")
         elif not scoped:
             violations.append(f"file changed outside the write scope: {p}")
         else:
