@@ -14,7 +14,7 @@ import time
 import uuid
 from datetime import datetime
 
-from . import VERSION, ledger, live, route, rulecheck, summarize
+from . import VERSION, ledger, live, postreview, route, rulecheck, summarize
 from . import prompt as P
 from .config import CLAUDE_GUARD_BASE, PACKET_SCHEMA, REPO, RESULT_SCHEMA, Config, Workspace, inside
 from .errors import Refused
@@ -350,6 +350,11 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
                   f"# which starts the interactive CLI with env -i (same env, TERM from the window) and "
                   f"{paths['prompt_live']} as the first message. The command above is the fallback.",
                   redacted(lv["cmd"], RESULT_SCHEMA, paths["prompt_live"])]
+    if postreview.applies(spec.agent, spec.mode, spec.kind):
+        lines += [f"# after the run: MANDATORY read-only Claude review ({spec.agent} auto = "
+                  f"{'--force, allow-all' if spec.agent == 'cursor' else '--mode accept-edits'}; chalach 2026-11-03):",
+                  f"# claude -p --permission-mode plan --json-schema schema/review.schema.json over {run_dir}/review-input.md"
+                  f" -> {run_dir}/review.md, ledger event {postreview.event_name(spec.agent)} ok|flagged"]
     cmd_txt = "\n".join(lines + [""])
     if dry_run:
         sys.stdout.write(cmd_txt)
@@ -495,6 +500,12 @@ def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, 
                   note=f"live: interactive CLI in an {cfg.live_terminal} window (headless if the window fails)" if lv else None,
                   **{"from": spec.from_, "to": spec.agent})
 
+    reviewed = postreview.applies(spec.agent, spec.mode, spec.kind)
+    roots = rulecheck.scan_roots(ws, scopes)
+    try:
+        snap = postreview.before(cfg, ws, scopes, roots) if reviewed else None
+    except Exception as e:  # the review then flags the run (no 'before' listing to compare with)
+        snap = {"listing": {"files": set(), "truncated": True}, "git": {}, "error": str(e)}
     marker_ns = rulecheck.touch_marker(paths["marker"])
     t0 = time.time()
     live_info, outcome = (None, None)
@@ -512,13 +523,38 @@ def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, 
     duration = round(time.time() - t0, 1)
     finished = ledger.now_iso()
 
-    scan = rulecheck.scan_changed(rulecheck.scan_roots(ws, scopes), marker_ns, cfg.scan_budget_s, cfg.scan_max_entries)
+    scan = rulecheck.scan_changed(roots, marker_ns, cfg.scan_budget_s, cfg.scan_max_entries)
     cls = rulecheck.classify(cfg, ws, spec.mode, scopes, scan["changed"], run_dir)
     tr = rulecheck.scan_transcript(parsed, stdout, stderr)
     rc = {"violations": cls["violations"] + tr["violations"], "flags": cls["flags"] + tr["flags"],
           "notes": cls["notes"], "changed_in_scope": cls["changed_in_scope"],
-          "scan": {"roots": rulecheck.scan_roots(ws, scopes), "entries": scan["entries"],
+          "scan": {"roots": roots, "entries": scan["entries"],
                    "truncated": scan["truncated"], "seconds": scan["seconds"]}}
+
+    review = None
+    if reviewed:  # cursor/agy auto never asked before acting: mandatory read-only Claude check (postreview.py)
+        try:
+            review = postreview.run(
+                cfg, agent=spec.agent, run_id=spec.run_id, ws=ws, scopes=scopes, run_dir=run_dir,
+                run_paths={"result_md": paths["result_md"],
+                           "stdout": None if is_live else os.path.join(run_dir, "stdout.log")},
+                snap=snap, roots=roots, changed=scan["changed"], rc=rc,
+                session_path=postreview.session_for(spec.agent, cfg.home, t0 - 5, spec.run_id, live_info),
+                text="\n".join([parsed.get("final_text") or "", "" if is_live else stdout[-200_000:], stderr[-50_000:]]),
+                write_settings=lambda p: write_claude_settings(cfg, p))
+        except Exception as e:  # never let the check crash ck-run; an unchecked run is a flagged run
+            review = postreview.failed(spec.agent, run_dir, e)
+        ledger.append(cfg.runs_dir, **dict(base, via="CK"), event=review["event"], status=review["status"],
+                      prompt_path=None, response_path=review["review_md"], summary_path=None,
+                      files_changed=rc["changed_in_scope"], write_scope=[s["path"] for s in scopes],
+                      duration_s=review["seconds"],
+                      note=(f"{review['status']}: {postreview.headline(review) if review['status'] == 'flagged' else review['summary']}")[:1000],
+                      **{"from": "claude", "to": "CK"})
+        if review["status"] == "flagged":
+            rc["flags"].append(f"post-run Claude review flagged the run: {postreview.headline(review)} "
+                               f"(see {review['review_md']})")
+            print(postreview.loud_warning(spec.agent, spec.run_id, review), file=sys.stderr)
+            sys.stderr.flush()
     rc["clean"] = not rc["violations"] and not rc["flags"]
 
     structured = parsed["structured"] if isinstance(parsed["structured"], dict) else None
@@ -528,6 +564,8 @@ def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, 
         lines, src, sum_note = summarize.summary_lines({"summary": agent_summary}, "", paths["result_md"])
     else:
         lines, src, sum_note = summarize.summary_lines(structured, parsed["final_text"], paths["result_md"])
+    if review and review["status"] == "flagged":  # CK reads summary.md first: the warning goes on top
+        lines = [f"FLAGGED by the post-run Claude review: {postreview.headline(review)[:120]} (review.md)"] + lines[:9]
     notes = [n for n in [sum_note] if n]
     if live_info and not is_live:
         notes.append(f"live window not used ({live_info['window_error']}); ran headless")
@@ -611,6 +649,8 @@ def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, 
         "started_at": started, "finished_at": finished, "duration_s": duration,
         "paths": paths, "actions_count": len(parsed["actions"]),
         "live": ({k: v for k, v in live_info.items() if k != "summary_text"} if live_info else None),
+        "post_review": ({k: review[k] for k in ("status", "summary", "review_md", "findings", "error", "seconds")}
+                        if review else None),
     }
     summary_text = "\n".join(lines) + "\n"
     if is_live:

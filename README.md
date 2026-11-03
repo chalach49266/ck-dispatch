@@ -75,16 +75,39 @@ can never pass them itself (`check_ck_argv` still refuses `--auto-review`, `--pe
 |---|---|
 | claude | `--permission-mode auto`; settings deny Edit/Write on raw folders and rule files |
 | codex | `-s workspace-write -c approval_policy="on-request" -c approvals_reviewer="auto_review" -m gpt-6.1-sol` (live adds `-a on-request`) |
-| cursor | `--trust --sandbox enabled --auto-review` |
-| agy | `--sandbox --mode auto` |
+| cursor | `--trust --sandbox enabled --force` (allow-all) + **mandatory Claude review** |
+| agy | `--sandbox --mode accept-edits` (never asks before an edit) + **mandatory Claude review** |
+
+**Cursor auto = allow-all + mandatory Claude review, approved by chalach on 2026-11-03** ("do cursor allow everything
+setting and also have claude code check ... if it is anything important but otherwise always allow"), and **the
+same for agy** ("allow agy to edit any file"). Cursor gets its allow-all flag `--force` (`agent --help`: "Force allow
+commands unless explicitly denied") instead of `--auto-review`. agy gets `--mode accept-edits` (auto-approves edits);
+its `--mode auto` is "not available for this account" and fell back to asking before every edit. Both keep their
+sandbox and `--trust`, and run in the task folder (cwd/`--workspace` = the first write scope, else the workspace).
+`-f`, `--yolo` and agy's `--dangerously-skip-permissions` stay refused, and CK can never pass `--force` itself.
+
+**Post-run review** (`ckdispatch/postreview.py`), after every cursor or agy auto run, headless or `--live`:
+1. ck-run writes `<run>/review-input.md`: files changed, files that disappeared (a name listing before and after),
+   `git status`/`git diff` of the task folder if it has its own repo (never the home-folder repo), the rule check
+   and keyword hits. It also writes `<run>/review-actions.txt`: the agent's tool calls from Cursor's JSONL
+   transcript or agy's SQLite conversation store.
+2. A short read-only Claude Code check runs: `claude -p --permission-mode plan --json-schema schema/review.schema.json
+   --settings <run>/claude-settings-review.json --add-dir <run>`, prompt on stdin, cwd = the task folder,
+   timeout `post_review.timeout_s` (default 300 s; optional `post_review.model`).
+3. Flagged: writes outside the task folder, raw data folders (`AQS/`, `raw/`, the workspace's raw list), deletions,
+   git push, network uploads, credential files, paid cloud (Tidy3D/Flexcompute) jobs. Hard facts flag the run even
+   if Claude says ok; a review that does not finish is flagged.
+4. Output: `<run>/review.md` and a ledger event `cursor_review` | `agy_review` (status `ok` | `flagged`). If
+   flagged: a loud `!!` warning on stderr, run status `flagged` (exit 4), and summary line 1 =
+   `FLAGGED by the post-run Claude review: ...`. `ck-run thread` shows the review.
 
 - Write area: `--write-scope` folders if given (same rules as edit mode, no `--approved` needed), else the workspace
   root minus raw folders and protected rule files. rulecheck flags any change outside it, in a raw folder or a rule file.
 - Auto takes the workspace's exclusive lock (like edit). Reviews stay read-only.
 - The prompt tells the agent to work on its own, mark unknowns, keep `PROGRESS.md`, and end the summary with
   "Questions for chalach" for Grok Bot to relay.
-- Still refused in every mode: bypassPermissions, `dangerously-*`, `--force`/`--yolo`, `danger-full-access`,
-  `approval_policy=never`, `--full-auto`.
+- Still refused in every mode: bypassPermissions, `dangerously-*`, `-f`/`--yolo`, `--force` (except cursor auto,
+  injected by ck-run), `danger-full-access`, `approval_policy=never`, `--full-auto`.
 - `--interactive` (= `--live`) opens the run in an iTerm2 window (`live.terminal` in workspaces.json, falls back to Terminal).
 - `--mode read` keeps the old look-only behaviour (plan / read-only).
 
@@ -250,7 +273,7 @@ values for permission flags (`plan`, `acceptEdits`, `accept-edits`, `ask`, `read
 ```
 cd ~/PhD_local/ck-dispatch && python3 -I tests/run_all.py
 ```
-62 tests, about 40 s. Stub CLIs (`tests/fake_cli.py`), a mock `osascript` (`tests/fake_osascript.py`: fails
+104 tests, about 70 s. Stub CLIs (`tests/fake_cli.py`), a mock `osascript` (`tests/fake_osascript.py`: fails
 by default, so every older test also covers the headless fallback; `run` runs `live.sh` detached the way a
 Terminal window would; `silent` never starts it), a temp HOME, fake workspaces and a test config. No network,
 no real agent, no Terminal window. They cover: no forbidden flag for any agent or mode; every refusal case;
@@ -266,6 +289,13 @@ exit; a late window does nothing; `--no-live`; `--dry-run` shows both commands. 
 the title format; iTerm2 runs live.sh as the session command (no `write text`, no `activate`) with the agent's
 profile; the dynamic profiles (title locked, 4 tab colors); default-profile case; `live_window_opened` and
 `live_fallback` ledger events with the window id, the reason and the window's last lines; iTerm2 → Terminal → headless.
+Cursor/agy auto (`tests/test_postreview.py`, 2026-11-03): cursor gets `--force` (headless and live) and agy
+`--mode accept-edits`; `--force` only for a cursor auto argv built by ck-run (never `-f`/`--yolo`, never from CK);
+the review runs read-only (plan mode, run folder added, task folder as cwd, no secrets); `ok` review → ledger
+`cursor_review`/`agy_review` `ok`; Claude `flagged` → exit 4, loud stderr warning, summary line 1; a review that
+fails or times out is flagged; hard facts flag even when Claude says ok (deleted file, raw-folder and outside
+writes, git diff deletions in a real repo, risky Cursor transcript and agy SQLite tool calls); `AQS/` and `raw/`
+count as raw whatever the config says; claude/codex auto and read runs get no review; `--dry-run` names the review.
 
 ## Step 3 live checks (2026-11-02; claude 2.1.316, codex-cli 0.166.0, agent 2026.10.22, agy 1.4.12)
 
@@ -319,6 +349,7 @@ ckdispatch/runner.py        one run: guards, run folder, child, parse, rulecheck
 ckdispatch/guards.py        forbidden flags, write scopes, env allowlist (code, not config)
 ckdispatch/flags.py         per-agent argv map (headless build, interactive build_live)
 ckdispatch/live.py          --live: iTerm2/Terminal window, profiles, live.sh launcher, wait, stop, session stores
+ckdispatch/postreview.py    mandatory read-only Claude review after cursor/agy auto runs (review.md, ledger *_review)
 ckdispatch/prompt.py        rules header, output contract, review task
 ckdispatch/summarize.py     output parsers, summary, UNVERIFIED tags, result.md
 ckdispatch/rulecheck.py     disk scan + transcript scan
@@ -327,6 +358,7 @@ ckdispatch/route.py         routing matrix, rate-limit state (parse_reset ported
 config/workspaces.json      workspace roots, wiki entry files, rule files, raw folders
 config/claude-guard.base.json  Claude deny rules (ck-run adds Edit denies per run)
 schema/result.schema.json   result schema (agents)   schema/packet.schema.json (packet self-check)
+schema/review.schema.json   post-run review answer (status ok|flagged, findings by category)
 docs/architecture.mmd       diagram source (PNG is step 10)
 tests/                      offline suite (fake_cli.py stub agents, fake_osascript.py mock Terminal)
 examples/sample_task.md     a task file for --dry-run

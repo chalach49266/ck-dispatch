@@ -6,6 +6,8 @@ One JSON line per event. Every line has the same keys:
                                         whether the title is locked; the title)
                  | live_fallback       (--live: the window did not run the agent; note = the reason; the run
                                         continues headless)
+                 | cursor_review | agy_review  (mandatory read-only Claude check after a cursor/agy auto run;
+                                        from claude to CK via CK; status ok | flagged; response_path = review.md)
   run_id, parent_run_id
   from, to       "CK" or an agent name (a review goes from the reviewed agent to the reviewer, via CK;
                  the thread view labels it "CK → <reviewer> · review of <agent>'s run")
@@ -195,6 +197,9 @@ def render_thread(events: list, run_id: str, with_summary: bool = True) -> str:
                 L.append(f"- live window: {ev.get('note') or ''}")
             elif name == "live_fallback":
                 L.append(f"- **live fallback**: {ev.get('note') or ''}")
+            elif name.endswith("_review"):  # cursor_review / agy_review: the mandatory post-run Claude check
+                L.append(f"- {name.replace('_', ' ')}: **{ev.get('status')}** · `{ev.get('response_path')}` · "
+                         f"{(ev.get('note') or '')[:300]}")
         if acc:
             word = "yes" if acc.get("accepted") else "no"
             L.append(f"- accepted: **{word}** by {acc.get('from')} at {_hm(acc.get('ts'))}"

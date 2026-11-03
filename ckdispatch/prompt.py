@@ -30,12 +30,17 @@ def header(*, ws: Workspace, run_id: str, agent: str, kind: str, mode: str,
                  + (f", except the two output files {outputs}." if live_outbox else "."))
     elif mode == "auto":
         where = "; ".join(s["path"] for s in scopes) or f"{ws.root} (except the read-only folders below)"
-        L.append(f"MODE: auto (your CLI's safety-reviewed auto mode). Run autonomously. Change files ONLY inside: {where}"
+        how = {"cursor": "allow-all (--force): your CLI will not ask before acting",
+               "agy": "accept-edits: your CLI will not ask before editing"}.get(agent, "your CLI's safety-reviewed auto mode")
+        L.append(f"MODE: auto ({how}). Run autonomously. Change files ONLY inside: {where}"
                  + (f"; also write the two output files {outputs}." if live_outbox else ".")
                  + " Make reasonable decisions yourself and mark unknowns (UNKNOWN / UNVERIFIED) instead of inventing."
                  " Do not stop to wait for answers: list questions that truly need chalach's decision at the end of"
                  " your output under 'Questions for chalach' (Grok Bot relays them). Keep PROGRESS.md in your"
-                 " working folder (done / remaining) so another agent can resume if usage limits hit.")
+                 " working folder (done / remaining) so another agent can resume if usage limits hit."
+                 + (" After you finish, a read-only Claude Code review checks this run (writes outside that folder,"
+                    " raw folders, deletions, git push, uploads, credential files, paid cloud jobs are flagged)."
+                    if agent in ("cursor", "agy") else ""))
     else:
         where = "; ".join(s["path"] for s in scopes)
         L.append(f'MODE: edit, approved by the user ("{approved}"). Change files ONLY inside: {where}. '

@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AI Agent Delegation Framework v3 — at a glance</title>
+<style>
+  /* Letter portrait, one page. Usable area = 7.66in x 10.32in. */
+  @page { size: letter portrait; margin: 0.34in 0.42in; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: #1f2937; font-size: 8pt; line-height: 1.3;
+    width: 7.66in;
+  }
+  code { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.9em; color: #334155; }
+  header { display: flex; justify-content: space-between; align-items: flex-end;
+           border-bottom: 2px solid #1f2937; padding-bottom: 3px; margin-bottom: 5px; }
+  h1 { font-size: 15pt; font-weight: 750; letter-spacing: -0.2px; }
+  h1 span { color: #6d28d9; }
+  .sub { font-size: 8.2pt; color: #475569; }
+  .meta { text-align: right; font-size: 7.2pt; color: #64748b; line-height: 1.3; white-space: nowrap; }
+  h2 { font-size: 8.4pt; text-transform: uppercase; letter-spacing: 0.6px; color: #0f172a;
+       margin: 0 0 3px; font-weight: 750; }
+  h2 .n { display: inline-block; background: #0f172a; color: #fff; border-radius: 3px;
+          padding: 0 4px; margin-right: 4px; font-size: 7.4pt; }
+  section { margin-bottom: 5px; }
+  .diagram { border: 1px solid #e2e8f0; border-radius: 6px; padding: 2px 4px 0; background: #fbfcfe; }
+  svg { display: block; width: 100%; height: auto; }
+
+  .steps { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-top: 4px; }
+  .step { border: 1px solid #ddd6fe; background: #f5f3ff; border-radius: 5px; padding: 2px 5px 3px; font-size: 7.2pt; line-height: 1.22; }
+  .step b { display: block; color: #5b21b6; font-size: 7.8pt; }
+
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
+  .card { border: 1px solid #e2e8f0; border-top: 4px solid var(--c); border-radius: 6px; padding: 3px 6px 4px; font-size: 7.3pt; line-height: 1.26; }
+  .card h3 { font-size: 10pt; display: flex; justify-content: space-between; align-items: baseline; }
+  .card h3 small { font-size: 6.8pt; font-weight: 500; color: #64748b; }
+  .card .what { color: #475569; font-size: 7pt; margin-bottom: 1px; }
+  .card dl { display: grid; grid-template-columns: 31px 1fr; gap: 0 4px; }
+  .card dt { font-weight: 700; color: var(--c); font-size: 6.6pt; text-transform: uppercase; letter-spacing: .3px; padding-top: 1px; }
+
+  .two { display: grid; grid-template-columns: 1.08fr 1fr; gap: 6px; }
+  .box { border: 1px solid #e2e8f0; border-radius: 6px; padding: 4px 7px 5px; }
+  ul { list-style: none; }
+  .safety { border-color: #fecaca; background: #fff7f7; }
+  .safety h2 { color: #991b1b; } .safety h2 .n { background: #b91c1c; }
+  .safety li { position: relative; padding-left: 10px; margin-bottom: 2px; font-size: 7.4pt; }
+  .safety li::before { content: "■"; position: absolute; left: 0; top: 0; color: #dc2626; font-size: 6pt; line-height: 1.8; }
+  .done { border-color: #bbf7d0; background: #f6fef8; }
+  .done h2 { color: #166534; } .done h2 .n { background: #15803d; }
+  .done li { display: grid; grid-template-columns: 11px 12px 1fr; margin-bottom: 2px; font-size: 7.4pt; }
+  .done .ck { color: #16a34a; font-weight: 800; }
+  .done .st { font-weight: 700; color: #166534; }
+  .pill { display: inline-block; background: #dcfce7; color: #166534; border-radius: 8px; padding: 0 5px; font-weight: 700; font-size: 7pt; }
+
+  .open { border-color: #fde68a; background: #fffcf0; }
+  .open h2 { color: #92400e; } .open h2 .n { background: #b45309; }
+  .open ul { columns: 2; column-gap: 14px; }
+  .open li { break-inside: avoid; position: relative; padding-left: 10px; margin-bottom: 2px; font-size: 7.3pt; }
+  .open li::before { content: "○"; position: absolute; left: 0; color: #b45309; font-weight: 700; }
+
+  .bottom { display: grid; grid-template-columns: 0.78fr 1.22fr; gap: 6px; }
+  .tok { border-color: #bfdbfe; background: #f5f9ff; }
+  .tok h2 { color: #1e3a8a; } .tok h2 .n { background: #1d4ed8; }
+  .tok p { font-size: 7.3pt; margin-bottom: 2px; }
+  .sess table { width: 100%; border-collapse: collapse; font-size: 6.9pt; }
+  .sess td { padding: 1px 3px; border-top: 1px solid #e2e8f0; vertical-align: top; }
+  .sess td:first-child { font-weight: 700; width: 34px; }
+  .gloss { font-size: 6.7pt; color: #475569; border-top: 1px solid #e2e8f0; padding-top: 3px; line-height: 1.32; }
+  .gloss b { color: #1f2937; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>AI Agent Delegation Framework <span>v3</span> — at a glance</h1>
+    <div class="sub">CK (Grok Bot) only orchestrates. <code>ck-run</code> sends each task to 1 of 4 terminal agents on the Mac, read-only by default.</div>
+  </div>
+  <div class="meta">2026-11-02 · chalach kasemtantikul<br>updates v2 (2026-10-31)</div>
+</header>
+
+<!-- 1. FLOW -->
+<section>
+  <h2><span class="n">1</span>How a task flows</h2>
+  <div class="diagram">
+  <svg viewBox="0 0 740 200" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, Helvetica Neue, Helvetica, Arial, sans-serif">
+    <defs>
+      <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#475569"/></marker>
+      <marker id="arp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker>
+      <marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#15803d"/></marker>
+    </defs>
+
+    <!-- cross-review loop (top) -->
+    <path d="M569,58 V14 H212 V38" fill="none" stroke="#7c3aed" stroke-width="1.6" stroke-dasharray="5 3" marker-end="url(#arp)"/>
+    <rect x="272" y="5" width="226" height="17" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+    <text x="385" y="17" text-anchor="middle" font-size="9.2" fill="#5b21b6" font-weight="600">cross-review: a different agent, file paths only</text>
+
+    <!-- you -> CK loop (bottom) -->
+    <path d="M695,140 V188 H55 V142" fill="none" stroke="#15803d" stroke-width="1.6" marker-end="url(#arg)"/>
+    <rect x="222" y="180" width="320" height="17" rx="8" fill="#f0fdf4" stroke="#86efac"/>
+    <text x="382" y="192" text-anchor="middle" font-size="9.2" fill="#166534" font-weight="600">you decide: approve an edit · accept / reject · resume a session</text>
+
+    <!-- CK -->
+    <rect x="4" y="62" width="102" height="78" rx="9" fill="#6d28d9"/>
+    <text x="55" y="86" text-anchor="middle" font-size="16" font-weight="800" fill="#fff">CK</text>
+    <text x="55" y="101" text-anchor="middle" font-size="9.4" fill="#ede9fe">Grok Bot</text>
+    <text x="55" y="116" text-anchor="middle" font-size="8.4" fill="#ede9fe">orchestrator only:</text>
+    <text x="55" y="128" text-anchor="middle" font-size="8.4" fill="#ede9fe">no heavy work itself</text>
+
+    <line x1="106" y1="101" x2="140" y2="101" stroke="#475569" stroke-width="1.6" marker-end="url(#ar)"/>
+
+    <!-- ck-run -->
+    <rect x="142" y="40" width="140" height="122" rx="9" fill="#1e293b"/>
+    <text x="212" y="58" text-anchor="middle" font-size="13" font-weight="800" fill="#fff" font-family="Menlo, monospace">ck-run</text>
+    <text x="212" y="70" text-anchor="middle" font-size="8" fill="#cbd5e1">on the Mac, via the Grok Bot shell</text>
+    <line x1="154" y1="76" x2="270" y2="76" stroke="#475569"/>
+    <text x="152" y="89"  font-size="8.3" fill="#e2e8f0">✓ refuses unsafe flags</text>
+    <text x="152" y="101" font-size="8.3" fill="#e2e8f0">✓ read mode by default</text>
+    <text x="152" y="113" font-size="8.3" fill="#e2e8f0">✓ edit = your OK + folder</text>
+    <text x="152" y="125" font-size="8.3" fill="#e2e8f0">✓ raw folders blocked</text>
+    <text x="152" y="137" font-size="8.3" fill="#e2e8f0">✓ clean env: no keys</text>
+    <text x="152" y="149" font-size="8.3" fill="#e2e8f0">✓ max 2 runs / workspace</text>
+
+    <!-- fan out -->
+    <path d="M282,101 C300,101 300,44 318,44"   fill="none" stroke="#475569" stroke-width="1.3" marker-end="url(#ar)"/>
+    <path d="M282,101 C300,101 300,82 318,82"   fill="none" stroke="#475569" stroke-width="1.3" marker-end="url(#ar)"/>
+    <path d="M282,101 C300,101 300,120 318,120" fill="none" stroke="#475569" stroke-width="1.3" marker-end="url(#ar)"/>
+    <path d="M282,101 C300,101 300,158 318,158" fill="none" stroke="#475569" stroke-width="1.3" marker-end="url(#ar)"/>
+
+    <!-- agents -->
+    <rect x="320" y="28" width="140" height="32" rx="7" fill="#fff" stroke="#d97757" stroke-width="1.8"/>
+    <rect x="320" y="28" width="6" height="32" rx="2" fill="#d97757"/>
+    <text x="333" y="42" font-size="10.5" font-weight="800" fill="#1f2937">claude</text>
+    <text x="377" y="42" font-size="7.9" fill="#64748b">Claude Code</text>
+    <text x="333" y="54" font-size="7.9" fill="#475569">heavy reasoning · writing</text>
+
+    <rect x="320" y="66" width="140" height="32" rx="7" fill="#fff" stroke="#10a37f" stroke-width="1.8"/>
+    <rect x="320" y="66" width="6" height="32" rx="2" fill="#10a37f"/>
+    <text x="333" y="80" font-size="10.5" font-weight="800" fill="#1f2937">codex</text>
+    <text x="371" y="80" font-size="7.9" fill="#64748b">OpenAI Codex</text>
+    <text x="333" y="92" font-size="7.9" fill="#475569">debug · lookups · reviewer</text>
+
+    <rect x="320" y="104" width="140" height="32" rx="7" fill="#fff" stroke="#334155" stroke-width="1.8"/>
+    <rect x="320" y="104" width="6" height="32" rx="2" fill="#334155"/>
+    <text x="333" y="118" font-size="10.5" font-weight="800" fill="#1f2937">cursor</text>
+    <text x="374" y="118" font-size="7.9" fill="#64748b">binary: agent</text>
+    <text x="333" y="130" font-size="7.9" fill="#475569">multi-file diff proposals</text>
+
+    <rect x="320" y="142" width="140" height="32" rx="7" fill="#fff" stroke="#4285f4" stroke-width="1.8"/>
+    <rect x="320" y="142" width="6" height="32" rx="2" fill="#4285f4"/>
+    <text x="333" y="156" font-size="10.5" font-weight="800" fill="#1f2937">agy</text>
+    <text x="358" y="156" font-size="7.9" fill="#64748b">Antigravity (Gemini)</text>
+    <text x="333" y="168" font-size="7.9" fill="#475569">wiki lint · 3rd-family check</text>
+
+    <!-- fan in -->
+    <path d="M460,44  C480,44  480,101 498,101" fill="none" stroke="#475569" stroke-width="1.3"/>
+    <path d="M460,82  C480,82  480,101 498,101" fill="none" stroke="#475569" stroke-width="1.3"/>
+    <path d="M460,120 C480,120 480,101 498,101" fill="none" stroke="#475569" stroke-width="1.3"/>
+    <path d="M460,158 C480,158 480,101 498,101" fill="none" stroke="#475569" stroke-width="1.3"/>
+    <line x1="496" y1="101" x2="501" y2="101" stroke="#475569" stroke-width="1.6" marker-end="url(#ar)"/>
+
+    <!-- run folder + ledger -->
+    <rect x="503" y="58" width="132" height="86" rx="9" fill="#fff" stroke="#b45309" stroke-width="1.8"/>
+    <text x="569" y="73" text-anchor="middle" font-size="9.6" font-weight="800" fill="#92400e">run folder + ledger</text>
+    <text x="511" y="87"  font-size="8" fill="#334155">• rule check: disk + log</text>
+    <text x="511" y="99"  font-size="8" fill="#334155">• summary.md (≤ 10 lines)</text>
+    <text x="511" y="111" font-size="8" fill="#334155">• ledger: 1 line per event</text>
+    <text x="511" y="123" font-size="8" fill="#334155">• ck-run thread = the chain</text>
+    <text x="511" y="135" font-size="8" fill="#334155">• exit code 0–6 = status</text>
+
+    <!-- -> you (via CK) -->
+    <line x1="635" y1="101" x2="652" y2="101" stroke="#475569" stroke-width="1.6" marker-end="url(#ar)"/>
+    <text x="644" y="95" text-anchor="middle" font-size="6.4" fill="#64748b">via CK</text>
+
+    <!-- You -->
+    <rect x="654" y="62" width="82" height="78" rx="9" fill="#15803d"/>
+    <text x="695" y="84" text-anchor="middle" font-size="14" font-weight="800" fill="#fff">You</text>
+    <text x="695" y="98"  text-anchor="middle" font-size="8.2" fill="#dcfce7">status, summary,</text>
+    <text x="695" y="110" text-anchor="middle" font-size="8.2" fill="#dcfce7">session id,</text>
+    <text x="695" y="122" text-anchor="middle" font-size="8.2" fill="#dcfce7">resume command,</text>
+    <text x="695" y="134" text-anchor="middle" font-size="8.2" fill="#dcfce7">the thread</text>
+  </svg>
+  </div>
+
+  <div class="steps">
+    <div class="step"><b>1 · Route</b>Pick the agent by task type; skip rate-limited ones.</div>
+    <div class="step"><b>2 · Dispatch</b>CK names agent, folder and mode, then runs it.</div>
+    <div class="step"><b>3 · Watch</b>Background job; wait for the finish notice.</div>
+    <div class="step"><b>4 · Cross-review</b>Heavy work: a different agent checks it.</div>
+    <div class="step"><b>5 · Thread</b><code>ck-run thread</code> shows the whole chain.</div>
+    <div class="step"><b>6 · Accept</b>Every run gets accept or reject.</div>
+  </div>
+</section>
+
+<!-- 2. AGENTS -->
+<section>
+  <h2><span class="n">2</span>The four agents (first-choice tasks from <code>route.py</code>)</h2>
+  <div class="cards">
+    <div class="card" style="--c:#d97757">
+      <h3>claude <small>Claude Code 2.1.316</small></h3>
+      <div class="what">Default heavy worker.</div>
+      <dl>
+        <dt>Best</dt><dd>synthesis, refactor, FDTD/microwave review, slides, writing</dd>
+        <dt>Read</dt><dd>plan mode</dd>
+        <dt>Edit</dt><dd>a <code>~/PhD_local</code> git repo only</dd>
+        <dt>Rules</dt><dd><code>CLAUDE.md</code></dd>
+      </dl>
+    </div>
+    <div class="card" style="--c:#10a37f">
+      <h3>codex <small>codex-cli 0.166.0</small></h3>
+      <div class="what">Cheap and fast; usual reviewer.</div>
+      <dl>
+        <dt>Best</dt><dd>Python debugging, quick lookups</dd>
+        <dt>Read</dt><dd>read-only sandbox</dd>
+        <dt>Edit</dt><dd><b>D1:</b> non-raw workspace folder or <code>~/PhD_local</code> repo; network off</dd>
+        <dt>Rules</dt><dd><code>AGENTS.md</code> (not probed)</dd>
+      </dl>
+    </div>
+    <div class="card" style="--c:#334155">
+      <h3>cursor <small>agent 2026.10.22</small></h3>
+      <div class="what">Cursor CLI; model <code>auto</code>.</div>
+      <dl>
+        <dt>Best</dt><dd>multi-file diff proposals</dd>
+        <dt>Read</dt><dd>plan mode + sandbox; <b>D4:</b> <code>--trust</code></dd>
+        <dt>Edit</dt><dd>no plan mode, approved folder only</dd>
+        <dt>Rules</dt><dd><code>.cursor/rules</code>, <code>CLAUDE.md</code>, <code>AGENTS.md</code></dd>
+      </dl>
+    </div>
+    <div class="card" style="--c:#4285f4">
+      <h3>agy <small>Antigravity 1.4.12</small></h3>
+      <div class="what">New in v3; gemini-3.8-flash-high.</div>
+      <dl>
+        <dt>Best</dt><dd>wiki lint; 3rd-family check of synthesis, writing</dd>
+        <dt>Read</dt><dd>plan mode; terminal sandbox</dd>
+        <dt>Edit</dt><dd><b>D2:</b> accept-edits, approved folder only</dd>
+        <dt>Rules</dt><dd><code>AGENTS.md</code></dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- 3/4. SAFETY + DONE -->
+<section class="two">
+  <div class="box safety">
+    <h2><span class="n">3</span>Safety rules (enforced in code)</h2>
+    <ul>
+      <li><b>Read-only by default.</b> An edit needs your words + time (<code>--approved</code>) and a folder (<code>--write-scope</code>).</li>
+      <li><b>Refused before anything runs:</b> skip-permissions, bypass, yolo, <code>--force</code>, auto, full-access, and any permission flag from CK.</li>
+      <li><b>Cursor auto = allow-all (<code>--force</code>) + mandatory Claude review; agy auto = accept-edits + the same review</b> (approved by chalach, 2026-11-03). Flags writes outside the task folder, raw folders, deletions, push, uploads, credentials, paid cloud.</li>
+      <li><b>Raw folders are read-only</b> (real path checked too). NV: agents write only in <code>NV Project/</code>; <code>AQS/</code> is raw.</li>
+      <li><b>No credentials:</b> clean env, no keys. Claude is denied <code>~/.ssh</code>, <code>.env</code>, <code>*auth*</code>, <code>*credential*</code>, keychains.</li>
+      <li><b>No push, deploy or send;</b> no paid cloud sims; no venv or clone in OneDrive.</li>
+      <li><b>After each run:</b> disk + log check. Flagged (4) or violation (5) stops the chain.</li>
+      <li><b>Max 2 runs per workspace;</b> an edit run locks it. A number with no source is tagged UNVERIFIED.</li>
+    </ul>
+  </div>
+  <div class="box done">
+    <h2><span class="n">4</span>What's done (2026-11-02)</h2>
+    <ul>
+      <li><span class="ck">✓</span><span class="st">0</span><span>Decisions D1–D4 made by you</span></li>
+      <li><span class="ck">✓</span><span class="st">1</span><span><code>ck-run</code> built (Python stdlib, local git, no remote)</span></li>
+      <li><span class="ck">✓</span><span class="st">2</span><span>Offline tests, fake agents, no network: <span class="pill">43/43 pass</span></span></li>
+      <li><span class="ck">✓</span><span class="st">3</span><span>Live probes of claude, cursor, agy; 2 Claude guard bugs fixed</span></li>
+      <li><span class="ck">✓</span><span class="st">4</span><span>No extra agy rules file needed (it reads <code>AGENTS.md</code>)</span></li>
+      <li><span class="ck">✓</span><span class="st">5</span><span><span class="pill">4 smoke runs</span> 1 per agent: all ok, check clean, 0 files changed</span></li>
+      <li><span class="ck">✓</span><span class="st">6</span><span><span class="pill">Cross-review</span> codex checked claude: agreed, 1 minor fix</span></li>
+      <li><span class="ck">✓</span><span class="st">7</span><span>Skills: 3 rewritten, 2 new (<code>ck-delegate</code>, <code>antigravity-prompt</code>)</span></li>
+    </ul>
+  </div>
+</section>
+
+<!-- 5. OPEN -->
+<section class="box open">
+  <h2><span class="n">5</span>Open items</h2>
+  <ul>
+    <li><b>Codex resume:</b> <code>codex resume &lt;id&gt; -s read-only</code> not checked; Codex edit mode not run live.</li>
+    <li><b>AQS is raw:</b> no agent can edit <code>AQS/</code> via ck-run unless <code>config/workspaces.json</code> changes.</li>
+    <li><b>Attribution email:</b> commits have none (a hook blocks emails). Do you want it?</li>
+    <li><b>Not tried live:</b> Cursor/agy plan mode blocking a write; a blind review; accept records.</li>
+    <li><b>Gap:</b> codex, cursor, agy can still <i>read</i> credential files (prompt + log scan only).</li>
+    <li><b>Later:</b> copy v3 to the real PhD folder (D3); diagram PNG; claude/codex model IDs.</li>
+  </ul>
+</section>
+
+<!-- 6/7. TOKENS + SESSIONS -->
+<section class="bottom">
+  <div class="box tok">
+    <h2><span class="n">6</span>Token saving</h2>
+    <p>Each agent writes a <b>summary of max 10 lines</b>. CK reads only that <code>summary.md</code> plus the session id.</p>
+    <p>No logs pasted into chat. Agents get <b>file paths, not content</b>. Full records stay in <code>~/PhD_local/agent_runs/</code>.</p>
+  </div>
+  <div class="box sess">
+    <h2><span class="n">7</span>Where sessions live · resume read-only</h2>
+    <table>
+      <tr><td>claude</td><td><code>~/.claude/projects/&lt;ws&gt;/</code></td><td><code>claude --resume ID --permission-mode plan</code></td></tr>
+      <tr><td>codex</td><td><code>~/.codex/sessions/Y/M/D/</code></td><td><code>codex resume ID -s read-only</code> (unchecked)</td></tr>
+      <tr><td>cursor</td><td><code>~/.cursor/chats/</code></td><td><code>agent --resume ID --mode plan</code></td></tr>
+      <tr><td>agy</td><td><code>~/.gemini/antigravity-cli/</code></td><td><code>agy --conversation ID --mode plan</code></td></tr>
+      <tr><td>all</td><td><code>agent_runs/ledger.jsonl</code></td><td><code>ck-run thread RUN_ID</code> · <code>ck-run show RUN_ID</code></td></tr>
+    </table>
+  </div>
+</section>
+
+<div class="gloss">
+  <b>CK</b> = your Grok Bot assistant (the orchestrator). <b>CLI</b> = command-line interface. <b>agy</b> = Google Antigravity CLI. <b>NV</b> = nitrogen-vacancy (NV Compact Magnetometer workspace).
+  <b>Raw folder</b> = human-owned data, never edited. <b>Env</b> = environment variables. <b>FDTD</b> = finite-difference time-domain. <b>D1–D4</b> = your 2026-11-02 decisions.
+  Full detail: <code>AI_Agent_Delegation_Framework_v3.md</code> (same folder).
+</div>
+
+<script>
+  /* One-page guard: if the content is taller than the printable area
+     (11in - 2 x 0.34in = 10.32in = 990.7 CSS px), scale it down to fit. */
+  (function () {
+    var avail = 10.32 * 96;
+    var h = document.body.getBoundingClientRect().height;
+    if (h > avail) { document.body.style.zoom = (avail / h * 0.98).toFixed(3); }
+  })();
+</script>
+</body>
+</html>

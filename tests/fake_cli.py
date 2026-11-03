@@ -3,6 +3,7 @@
 The test sandbox copies this file (with an absolute shebang) as claude, codex, agent and agy.
 Behaviour comes from control.json next to the copy: {"default": {...}, "<agent>": {...}}.
 Every call is recorded in calls/NNN-<agent>.json (argv, cwd, env, prompt, pid, live).
+A claude call whose prompt starts with "CK POST-RUN REVIEW" acts as ck-run's post-run reviewer (main_review).
 Interactive argv (ck-run --live): main_live() writes result.md + summary.md into the prompt's OUTBOX and a fake
 session file under $HOME; control keys under "live" apply only there (write_outbox, session_answer, sleep, exit).
 """
@@ -151,6 +152,60 @@ def main_live(ctrl, prompt):
     sys.exit(int(lc.get("exit", 0)))
 
 
+def write_tool_session(ctrl, prompt):
+    """Headless cursor/agy: a session store holding the prompt and ctrl["tool_calls"] ([[name, {input}], ...]),
+    in each CLI's real format (cursor JSONL transcript; agy SQLite steps with protobuf-like blobs)."""
+    calls = ctrl.get("tool_calls")
+    if calls is None:
+        return
+    home, sid = os.environ["HOME"], str(uuid.uuid4())
+    if AGENT == "cursor":
+        path = os.path.join(home, ".cursor", "projects", "fake-workspace", "agent-transcripts", sid, f"{sid}.jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(json.dumps({"role": "user", "message": {"content": [{"type": "text", "text": prompt}]}}) + "\n")
+            for name, inp in calls:
+                f.write(json.dumps({"role": "assistant", "message": {"content": [
+                    {"type": "tool_use", "name": name, "input": inp}]}}) + "\n")
+    elif AGENT == "agy":
+        import sqlite3
+        path = os.path.join(home, ".gemini", "antigravity-cli", "conversations", f"{sid}.db")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        con = sqlite3.connect(path)
+        con.execute("CREATE TABLE steps (idx integer, step_type integer, step_payload blob)")
+        con.execute("INSERT INTO steps VALUES (0, 14, ?)", (b"\x0a\x02" + prompt.encode(),))
+        for i, (name, inp) in enumerate(calls, 1):
+            payload = (b"\x12\x08" + f"call_{i}00".encode() + b"\x1a\x0b" + name.encode() + b"\x12\x01"
+                       + json.dumps(inp).encode() + b"\x01\x02")
+            con.execute("INSERT INTO steps VALUES (?, 132, ?)", (i, payload))
+        con.commit()
+        con.close()
+
+
+def main_review(ctrl, prompt):
+    """claude as ck-run's post-run reviewer (cursor/agy auto). control: {"claude": {"review": {...}}}
+    status, summary, findings, output (json|text|none), sleep, exit."""
+    rv = ctrl.get("review", {})
+    if rv.get("sleep"):
+        time.sleep(rv["sleep"])
+    res = {"status": rv.get("status", "ok"), "summary": rv.get("summary", "Stub review: nothing important."),
+           "findings": rv.get("findings", [])}
+    mode = rv.get("output", "json")
+    print(json.dumps({"type": "system", "subtype": "init", "session_id": "stub-review"}))
+    for line in prompt.splitlines():  # the reviewer reads the evidence file ck-run names
+        if line.startswith("1. Read "):
+            print(json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Read", "input": {"file_path": line.split()[2]}}]}}))
+    ev = {"type": "result", "subtype": "success", "is_error": False,
+          "result": json.dumps(res) if mode == "json" else "I could not decide.", "session_id": "stub-review"}
+    if mode == "json":
+        ev["structured_output"] = res
+    if mode != "none":
+        print(json.dumps(ev))
+    sys.stdout.flush()
+    sys.exit(int(rv.get("exit", 0)))
+
+
 def main():
     ctrl = control()
     prompt = get_prompt()
@@ -161,6 +216,8 @@ def main():
     n = len(os.listdir(calls))
     with open(os.path.join(calls, f"{n:03d}-{AGENT}.json"), "w") as f:
         json.dump(rec, f)
+    if AGENT == "claude" and prompt.startswith("CK POST-RUN REVIEW"):
+        main_review(ctrl, prompt)
     if rec["live"]:
         main_live(ctrl, prompt)
     for d in ctrl.get("mkdir", []):
@@ -169,6 +226,9 @@ def main():
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "a") as f:
             f.write("stub edit\n")
+    for p in ctrl.get("delete", []):
+        os.remove(p)
+    write_tool_session(ctrl, prompt)
     if ctrl.get("stderr"):
         sys.stderr.write(ctrl["stderr"] + "\n")
         sys.stderr.flush()

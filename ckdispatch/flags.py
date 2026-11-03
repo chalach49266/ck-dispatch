@@ -7,8 +7,16 @@ mode. Writes go to the --write-scope folders if given, else the workspace minus 
   claude  auto: -p ... --settings <run>/claude-settings.json --permission-mode auto [--add-dir <scope>]
   codex   auto: exec ... -C <scope|ws> -s workspace-write -c approval_policy="on-request"
                 -c approvals_reviewer="auto_review" -m <model|gpt-6.1-sol> -     (= --approve-for-me)
-  cursor  auto: -p --output-format json --trust --sandbox enabled --auto-review --workspace <scope|ws> <prompt>
-  agy     auto: --output-format json --sandbox ... --mode auto -p <prompt>
+  cursor  auto: -p --output-format json --trust --sandbox enabled --force --workspace <scope|ws> <prompt>
+  agy     auto: --output-format json --sandbox ... --mode accept-edits -p <prompt>
+
+Cursor and agy auto (2026-11-03, approved by chalach: "do cursor allow everything setting ... otherwise always
+allow"; "allow agy to edit any file"): cursor gets its allow-all flag `--force` ("Force allow commands unless
+explicitly denied", `agent --help`, 2026.10.22) instead of `--auto-review`; agy gets `--mode accept-edits`
+(auto-approves edits; `--mode auto` is "not available for this account" and fell back to asking before every
+edit). Both keep --trust/--sandbox, the cwd and --workspace stay the task folder, and every such run gets a
+MANDATORY read-only Claude Code review afterwards (ckdispatch/postreview.py). `-f`, `--yolo` and agy's
+`--dangerously-skip-permissions` stay refused; CK can never pass --force itself.
 
 Read mode (default) and edit mode (only with --approved and --write-scope):
 
@@ -29,7 +37,8 @@ JSON, agy -p takes the prompt as its value, agy applies --mode plan in print mod
 'not supported in print mode'), and claude puts the schema result in 'structured_output'. No flag
 needed changing. Codex was not run live (blocked by the merge-gate mod), so its argv stays [assumed].
 
---live (build_live, 2026-11-02): the same permission flags on each CLI's interactive mode. Initial
+--live (build_live, 2026-11-02): the same permission flags on each CLI's interactive mode (cursor auto: --force,
+agy auto: --mode accept-edits). Initial
 prompt, per each CLI's --help: claude [prompt], codex [PROMPT], cursor agent [prompt...], agy -i <prompt>.
 """
 from __future__ import annotations
@@ -55,6 +64,7 @@ PROMPT_ON_STDIN = {"claude": True, "codex": True, "cursor": False, "agy": False}
 SCHEMA_ENFORCED_BY_FLAG = {"claude": True, "codex": True, "cursor": False, "agy": False}
 MODES = ("auto", "read", "edit")
 AUTO_AREAS = {a: ["workspace", "local"] for a in AGENTS}   # where an auto-mode --write-scope may point
+POST_REVIEWED = ("cursor", "agy")  # auto runs of these get the mandatory read-only Claude review (postreview.py)
 CODEX_AUTO_MODEL = "gpt-6.1-sol"  # chalach: Astra 6 only for complex tasks (pass --model gpt-6-astra)
 CODEX_AUTO_CONFIG = ["-c", 'approval_policy="on-request"', "-c", 'approvals_reviewer="auto_review"']
 
@@ -145,7 +155,7 @@ def build(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, mo
             a += ["--mode", "plan", "--workspace", ws.root]
             cwd = ws.root
         elif mode == "auto":
-            a += ["--auto-review", "--workspace", root]
+            a += ["--force", "--workspace", root]  # allow-all (chalach 2026-11-03) + mandatory Claude review
             for s in scope_paths[1:]:
                 a += ["--add-dir", s]
             cwd = root
@@ -167,7 +177,7 @@ def build(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, mo
             a += ["--mode", "plan"]
             cwd = ws.root
         elif mode == "auto":
-            a += ["--mode", "auto"]
+            a += ["--mode", "accept-edits"]  # never asks before an edit (chalach 2026-11-03) + mandatory Claude review
             for s in scope_paths[1:]:
                 a += ["--add-dir", s]
             cwd = root
@@ -182,7 +192,7 @@ def build(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, mo
             a += ["--model", model]
         a += ["-p", PROMPT]
     _assert_invariants(agent, mode, a)
-    check_child_argv(a, PROMPT, auto=mode == "auto")
+    check_child_argv(a, PROMPT, auto=mode == "auto", agent=agent)
     return Command(agent, a, cwd, PROMPT_ON_STDIN[agent], binary)
 
 
@@ -200,8 +210,8 @@ def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: lis
               swallow the prompt)
       codex   -C <ws|scope> -s read-only|workspace-write [-c ...network_access=false --add-dir <run>]
               -a on-request [-m M] <prompt>
-      cursor  --trust --sandbox enabled [--mode plan] --workspace <ws|scope> --add-dir <run> [...] <prompt>
-      agy     --sandbox --mode plan|accept-edits --add-dir <run> [...] -i <prompt>
+      cursor  --trust --sandbox enabled [--mode plan | --force (auto)] --workspace <ws|scope> --add-dir <run> [...] <prompt>
+      agy     --sandbox --mode plan|accept-edits (edit and auto) --add-dir <run> [...] -i <prompt>
     """
     if agent not in AGENTS:
         raise Refused(f"unknown agent '{agent}'; use one of: {', '.join(AGENTS)}")
@@ -249,7 +259,7 @@ def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: lis
             a += ["--mode", "plan", "--workspace", ws.root]
             cwd = ws.root
         elif mode == "auto":
-            a += ["--auto-review", "--workspace", root]
+            a += ["--force", "--workspace", root]  # allow-all (chalach 2026-11-03) + mandatory Claude review
             for s in scope_paths[1:]:
                 a += ["--add-dir", s]
             cwd = root
@@ -263,7 +273,7 @@ def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: lis
         if model:
             a += ["--model", model]
     else:  # agy
-        a += ["--sandbox", "--mode", {"read": "plan", "edit": "accept-edits", "auto": "auto"}[mode]]
+        a += ["--sandbox", "--mode", {"read": "plan", "edit": "accept-edits", "auto": "accept-edits"}[mode]]
         if mode == "read":
             cwd = ws.root
         else:
@@ -277,7 +287,7 @@ def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: lis
         a += ["-i"]  # --prompt-interactive: run the prompt, then stay in the session
     a += [PROMPT]
     _assert_invariants(agent, mode, a, live=True)
-    check_child_argv(a, PROMPT, auto=mode == "auto")
+    check_child_argv(a, PROMPT, auto=mode == "auto", agent=agent)
     return Command(agent, a, cwd, False, binary)
 
 
@@ -294,10 +304,11 @@ def _assert_invariants(agent: str, mode: str, a: list, live: bool = False) -> No
         elif agent == "codex":
             ok = (_pair(a, "-s", "workspace-write") and _pair(a, "-c", 'approvals_reviewer="auto_review"')
                   and _pair(a, "-c", 'approval_policy="on-request"'))
-        elif agent == "cursor":
-            ok = "--trust" in a and _pair(a, "--sandbox", "enabled") and "--auto-review" in a
+        elif agent == "cursor":  # allow-all, but still trusted-workspace + sandbox, never the --yolo alias
+            ok = ("--trust" in a and _pair(a, "--sandbox", "enabled") and "--force" in a
+                  and "--yolo" not in a and "--mode" not in a)
         elif agent == "agy":
-            ok = _pair(a, "--mode", "auto") and "--sandbox" in a
+            ok = _pair(a, "--mode", "accept-edits") and "--sandbox" in a
         if not ok:
             raise Refused(f"internal guard: {agent} argv lacks its auto-mode permission flag")
         return
@@ -308,7 +319,8 @@ def _assert_invariants(agent: str, mode: str, a: list, live: bool = False) -> No
         if live:
             ok = ok and _pair(a, "-a", "on-request")
     elif agent == "cursor":
-        ok = "--trust" in a and _pair(a, "--sandbox", "enabled") and (_pair(a, "--mode", "plan") == (mode == "read"))
+        ok = ("--trust" in a and _pair(a, "--sandbox", "enabled") and (_pair(a, "--mode", "plan") == (mode == "read"))
+              and "--force" not in a)
     elif agent == "agy":
         ok = _pair(a, "--mode", "plan" if mode == "read" else "accept-edits") and "--sandbox" in a
     if not ok:

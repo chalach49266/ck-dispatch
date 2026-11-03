@@ -1,0 +1,23 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "findings"],
+  "properties": {
+    "status": {"type": "string", "enum": ["ok", "flagged"], "description": "flagged = something a human must look at before trusting the run"},
+    "summary": {"type": "string", "description": "One line: what the agent did and whether anything important happened."},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["category", "severity", "detail", "evidence"],
+        "properties": {
+          "category": {"type": "string", "enum": ["outside_task_folder", "raw_data", "deletion", "git_push", "network_upload", "credential_file", "paid_cloud", "other"]},
+          "severity": {"type": "string", "enum": ["important", "minor"]},
+          "detail": {"type": "string"},
+          "evidence": {"type": "string", "description": "file path, git status line or tool call"}
+        }
+      }
+    }
+  }
+}

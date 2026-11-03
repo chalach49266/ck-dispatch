@@ -36,6 +36,10 @@ FORBIDDEN_FLAGS = {"-f", "--force", "--bare", "-w", "--worktree", "--auto"}
 # are allowed ONLY in an argv that ck-run itself built for mode auto (check_child_argv(..., auto=True)).
 # CK can never pass them to ck-run (check_ck_argv still refuses them); full bypass stays refused always.
 AUTO_TOKENS = {"--auto-review"}                                   # cursor Smart Auto (server classifier)
+# Allow-all flags per agent (2026-11-03, chalach approved: cursor "allow everything", with a mandatory read-only
+# Claude review after every such run). Exact token only, only for that agent, only in an auto argv ck-run built.
+# '-f', '--yolo' and every 'dangerously'/'bypass' token stay refused for every agent.
+AUTO_AGENT_FLAGS = {"cursor": {"--force"}}
 AUTO_MODE_VALUES = {"--permission-mode": {"auto"},                # claude auto mode (classifier)
                     "--mode": {"auto"}}                           # agy auto (prompts on irreversible actions)
 AUTO_CONFIG_OVERRIDES = {'approval_policy="on-request"',          # codex: approvals routed to auto review
@@ -113,18 +117,21 @@ def check_ck_argv(argv: list) -> None:
         i += 1
 
 
-def check_child_argv(argv: list, prompt_sentinel: object, auto: bool = False) -> None:
+def check_child_argv(argv: list, prompt_sentinel: object, auto: bool = False, agent: str | None = None) -> None:
     """Final check on the exact argv handed to an agent CLI. The prompt slot is skipped.
 
     auto=True only from flags.build/build_live for ck-run's own --mode auto: it admits exactly the
-    AUTO_* tokens above and nothing else; every bypass check still applies."""
+    AUTO_* tokens above (and AUTO_AGENT_FLAGS of `agent`) and nothing else; every bypass check still applies."""
     n = len(argv)
+    agent_flags = AUTO_AGENT_FLAGS.get(agent or "", set()) if auto else set()
     for i, tok in enumerate(argv):
         if tok is prompt_sentinel:
             continue
         t = str(tok)
         low = t.lower()
         prev = str(argv[i - 1]).lower() if i else ""
+        if t in agent_flags:  # exact, case-sensitive: '--force' for cursor auto
+            continue
         if auto and (low in AUTO_TOKENS or (low in {v for s in AUTO_MODE_VALUES.values() for v in s}
                                             and prev in AUTO_MODE_VALUES)):
             continue

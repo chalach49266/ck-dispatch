@@ -59,21 +59,45 @@ class TestArgvMap(unittest.TestCase):
         want = {"claude": [["--permission-mode", "auto"]],
                 "codex": [["-s", "workspace-write"], ["-c", 'approval_policy="on-request"'],
                           ["-c", 'approvals_reviewer="auto_review"'], ["-m", "gpt-6.1-sol"]],
-                "agy": [["--mode", "auto"]]}
+                "cursor": [["--sandbox", "enabled"]],
+                "agy": [["--mode", "accept-edits"]]}  # 2026-11-03: agy --mode auto is not on this account
         for agent in ("claude", "codex", "cursor", "agy"):
             with self.subTest(agent=agent):
                 argv = self._build(agent, "auto").argv
                 flat = " ".join(str(x) for x in argv if x is not PROMPT).lower()
                 for pair in want.get(agent, []):
                     self.assertIn(pair, pairs(argv), (agent, argv))
-                if agent == "cursor":
-                    self.assertIn("--auto-review", argv)
+                if agent == "cursor":  # 2026-11-03 (chalach): allow-all + mandatory Claude review
+                    self.assertIn("--force", argv)
+                    self.assertIn("--trust", argv)
+                    self.assertNotIn("--auto-review", argv)
+                    self.assertNotIn("--mode", argv)
+                    flat = flat.replace("--force", "")
                 for bad in ("dangerously", "bypasspermissions", "yolo", "--force", "full-access", "full-auto",
-                            "skip-permissions", "approval_policy=never", 'approval_policy="never"'):
-                    self.assertNotIn(bad, flat)
-                guards.check_child_argv(argv, PROMPT, auto=True)  # allowed when ck-run injects them
+                            "skip-permissions", "approval_policy=never", 'approval_policy="never"', "-f "):
+                    self.assertNotIn(bad, flat + " ")
+                guards.check_child_argv(argv, PROMPT, auto=True, agent=agent)  # allowed when ck-run injects them
+                if agent != "agy":  # agy auto = accept-edits, the same flag as approved edit mode
+                    with self.assertRaises(Refused):
+                        guards.check_child_argv(argv, PROMPT)  # same tokens refused outside auto
+                if agent == "cursor":
+                    with self.assertRaises(Refused):
+                        guards.check_child_argv(argv, PROMPT, auto=True, agent="codex")  # --force is cursor's only
+
+    def test_cursor_force_is_the_only_new_allow_all_and_only_for_cursor_auto(self):
+        a = ["agent", "-p", "--trust", "--sandbox", "enabled", "--force", "--workspace", "/w", PROMPT]
+        guards.check_child_argv(a, PROMPT, auto=True, agent="cursor")
+        for agent, auto in (("cursor", False), ("agy", True), ("claude", True), ("codex", True), (None, True)):
+            with self.subTest(agent=agent, auto=auto):
                 with self.assertRaises(Refused):
-                    guards.check_child_argv(argv, PROMPT)  # same tokens refused outside auto
+                    guards.check_child_argv(a, PROMPT, auto=auto, agent=agent)
+        for bad in (["-f"], ["--yolo"], ["--Force"], ["--force=1"], ["--dangerously-skip-permissions"],
+                    ["--approve-mcps"]):
+            with self.subTest(bad=bad):
+                with self.assertRaises(Refused):
+                    guards.check_child_argv(["agent", "-p", *bad, PROMPT], PROMPT, auto=True, agent="cursor")
+        with self.assertRaises(Refused):
+            guards.check_ck_argv(["run", "--agent", "cursor", "--force"])  # CK can never pass it
 
     def test_auto_does_not_open_bypass_in_child_guard(self):
         for bad in (["--dangerously-skip-permissions"], ["--permission-mode", "bypassPermissions"],
