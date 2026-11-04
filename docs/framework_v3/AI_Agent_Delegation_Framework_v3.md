@@ -269,7 +269,7 @@ Live-run session ids (for §6): claude `6bf3669d-2003-4fac-94b6-40c4515b1d4e` ·
 ---
 
 ## 9. Unchanged from v2 (read them there)
-v2 §3 model evidence (snapshot 2026-10-27 to 10-31) · §5.4 result schema (v3 adds `summary` + `report_md`) · §6.0 RICE backlog · §6.1–6.2 task catalogs D1–D7, N1–N7 (not the same as decisions D1–D4 above) · §6.3 routines · §7.0 trust ladder (ck-run now does the schema, rule and number checks itself) · §8 escalation · §10 cost and quota (max 2 runs per workspace is now a lock) · §11 failure handling.
+v2 §3 model evidence (snapshot 2026-10-27 to 10-31) · §5.4 result schema (v3 adds `summary` + `report_md`) · §6.0 RICE backlog · §6.1–6.2 task catalogs D1–D7, N1–N7 (not the same as decisions D1–D4 above) · §6.3 routines · §7.0 trust ladder (ck-run now does the schema, rule and number checks itself) · §8 escalation · §10 cost and quota (v2's "at most 2 runs per workspace" is gone: runs go in parallel; see §4.3 "No workspace lock") · §11 failure handling.
 
 ## 10. Sources
 - Framework v2: `/Users/ckasemtantikul/~/Library/CloudStorage/OneDrive-WashingtonUniversityinSt.Louis/Documents/PhD/AI_Agent_Delegation_Framework.md`
