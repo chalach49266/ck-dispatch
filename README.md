@@ -118,7 +118,10 @@ those folders exists (washu before any `<course>/solutions/` or `<course>/prep/`
 1. ck-run writes `<run>/review-input.md`: files changed, files that disappeared (a name listing before and after),
    `git status`/`git diff` of the task folder if it has its own repo (never the home-folder repo), the rule check
    and keyword hits. It also writes `<run>/review-actions.txt`: the agent's tool calls from Cursor's JSONL
-   transcript or agy's SQLite conversation store.
+   transcript or agy's SQLite conversation store (the run's own session, see Session id under Live mode; a
+   headless cursor run uses the session id the CLI printed). If ck-run could not confirm the session is this
+   run's, the evidence, review-actions.txt, the review prompt and review.md say so, and that session's risky
+   tool calls are hints for the reviewer, not hard facts.
 2. A short read-only Claude Code check runs: `claude -p --permission-mode plan --json-schema schema/review.schema.json
    --settings <run>/claude-settings-review.json --add-dir <run>`, prompt on stdin, cwd = the task folder,
    timeout `post_review.timeout_s` (default 300 s; optional `post_review.model`).
@@ -195,7 +198,12 @@ activated, and every fallback is loud (see below).
   session log (claude, codex, cursor JSONL; not agy's SQLite store) and marks the run done with it.
 - **Session id**: claude gets `--session-id <uuid>` from ck-run; for codex, cursor and agy ck-run finds the
   new session in `~/.codex/sessions/...`, `~/.cursor/projects/*/agent-transcripts/<id>/` or
-  `~/.gemini/antigravity-cli/conversations/<id>.db` that contains the run id. Saved in `result.json`.
+  `~/.gemini/antigravity-cli/conversations/<id>.db` whose first `RUN: <run_id> | agent: <agent>` line (the
+  prompt's own line) is this run's. A bare mention of the run id does not count: a parallel run's prompt names
+  it in its CONCURRENCY line (2026-11-04: two cursor runs 1 s apart both got the newer one's session). Only if
+  no new session has that line does ck-run fall back (a quote of the line, a mention, or the only new session);
+  `session_how` then says "may be wrong", `session_sure` is false, no answer is recovered from that log, and
+  the post-run review is told its tool calls may be another run's. Saved in `result.json`.
 - **Timeout**: at `--timeout` ck-run stops the agent in the window (SIGTERM then SIGKILL to the `live.sh`
   process group) and the status is `timeout`. Quitting the agent without writing anything gives `failed`.
 - **Fallback to headless** (same run folder, `prompt.md`, note in the result, ledger `live_fallback`, stderr
@@ -374,7 +382,8 @@ no workspace lock (old slot files ignored); rate-limit fallback; summary cut and
 sends paths not content; blind review; accept; thread view. Live (`tests/test_live.py`): interactive argv
 keeps each agent's permission flags (codex `-a on-request`, `-a never` refused); launcher script (env -i,
 claim); live Claude deny rules; each agent end to end in a mocked window (summary.md → ledger `ok`, session
-id found); Ctrl+C after summary.md is still ok; 10-line cut; rule check in live mode; answer recovered from the session log; timeout stops the
+id found); each run gets its own session when a newer parallel session names its run id (`tests/test_sessions.py`,
+codex/cursor/agy, headless and live); Ctrl+C after summary.md is still ok; 10-line cut; rule check in live mode; answer recovered from the session log; timeout stops the
 agent; review runs live; fallback on osascript error, on a window that never starts, and on an early error
 exit; a late window does nothing; `--no-live`; `--dry-run` shows both commands. Window identity (2026-11-03):
 the title format; iTerm2 runs live.sh as the session command (no `write text`, no `activate`) with the agent's

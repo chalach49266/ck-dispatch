@@ -22,7 +22,9 @@ title. If iTerm2 has not loaded the profile yet, the default profile is used and
 (live.sh still sets the badge and tab color with iTerm2 escape codes).
 
 Interactive mode has no result JSON on stdout, so the prompt asks the agent to write result.md and
-summary.md into the run folder. Session ids come from each CLI's own session store.
+summary.md into the run folder. Session ids come from each CLI's own session store: the session whose first
+"RUN: <run_id> | agent: <agent>" line is this run's (find_session); a session found any other way is marked
+unsure, and the post-run review is told so.
 """
 from __future__ import annotations
 
@@ -32,6 +34,7 @@ import os
 import re
 import shlex
 import signal
+import sqlite3
 import subprocess
 import time
 from datetime import datetime, timedelta
@@ -368,22 +371,70 @@ def stop(run_dir: str, grace_s: float = 5.0) -> str:
 
 # ---- session stores (paths from docs/step3/results.md) ----
 
-def _contains(path: str, needle: bytes) -> bool:
-    files = [path]
-    if os.path.isdir(path):
+# A run's own session starts with its prompt, whose 2nd line is "RUN: <run_id> | agent: <agent> | kind: ..."
+# (prompt.header). Other runs' prompts can NAME this run id too (their CONCURRENCY line lists other live runs'
+# claims), so a bare mention says nothing about whose session it is: on 2026-11-04 two cursor runs started 1 s
+# apart both got the newer one's session, and the older run's review read the wrong tool calls. The marker has
+# no character that JSON escapes, so it reads the same in JSONL transcripts and in agy's SQLite blobs.
+MARKER_RX = re.compile(rb"RUN: (\d{4}-\d{2}-\d{2}T\d{6}-[A-Za-z0-9_-]+) \| agent: ([a-z]+)")
+
+
+def run_marker(run_id: str, agent: str) -> str:
+    return f"RUN: {run_id} | agent: {agent}"
+
+
+def _agy_steps(path: str):
+    """agy's conversation steps in order (SQLite table `steps`), or None if the store cannot be read that way."""
+    if not path.endswith(".db") or not os.path.isfile(path):
+        return None
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
         try:
-            files = [os.path.join(path, n) for n in os.listdir(path)]
+            rows = con.execute("SELECT step_payload FROM steps ORDER BY idx").fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+    return b"\n".join(r[0].encode("utf-8") if isinstance(r[0], str) else bytes(r[0]) for r in rows if r[0])
+
+
+def _session_bytes(path: str) -> tuple:
+    """(bytes, ordered). JSONL transcripts are in time order. agy's store is read step by step (time order) when
+    SQLite can read it and its steps hold a RUN line; otherwise as raw file bytes (page order, not time order)."""
+    steps = _agy_steps(path)
+    if steps is not None and MARKER_RX.search(steps):
+        return steps, True
+    files = [path]
+    if os.path.isdir(path):  # cursor: <id>/<id>.jsonl first, then any other file in the folder
+        try:
+            names = sorted(os.listdir(path))
         except OSError:
-            return False
+            return b"", True
+        main = os.path.basename(path) + ".jsonl"
+        files = [os.path.join(path, n) for n in ([main] if main in names else []) + [n for n in names if n != main]]
+    chunks = []
     for p in files:
         for q in (p, p + "-wal"):
             try:
                 with open(q, "rb") as f:
-                    if needle in f.read(READ_CAP):
-                        return True
+                    chunks.append(f.read(READ_CAP))
             except OSError:
                 continue
-    return False
+    return b"\n".join(chunks), not path.endswith(".db")
+
+
+def session_match(path: str, run_id: str, agent: str) -> str:
+    """How a session relates to a run:
+    'own'     its first RUN line is this run's (the session was started with this run's prompt);
+    'quote'   it holds this run's RUN line, but after another run's (that agent read this run's prompt file);
+    'mention' only the bare run id (another run's prompt or output names it); 'none'."""
+    data, ordered = _session_bytes(path)
+    me = (run_id.encode("utf-8"), agent.encode("utf-8"))
+    marks = [m.groups() for m in MARKER_RX.finditer(data)]
+    if me in marks:
+        own = marks[0] == me if ordered else set(marks) == {me}  # raw SQLite pages: no order, so no other run
+        return "own" if own else "quote"
+    return "mention" if me[0] in data else "none"
 
 
 def _scan(base: str, since: float, want_dir: bool, suffix: str = ""):
@@ -431,9 +482,15 @@ def _candidates(agent: str, home: str, since: float) -> list:
     return []
 
 
+FOUND_OWN = "found in the session store (its first RUN line is this run's)"
+
+
 def find_session(agent: str, home: str, since: float, run_id: str, known_id: str | None = None) -> dict:
-    """{'id', 'path', 'how'}. claude: the id ck-run set with --session-id. Others: the newest session in the
-    store that started after the window opened and holds this run id."""
+    """{'id', 'path', 'how', 'sure'}. claude: the id ck-run set with --session-id. Others: the session the CLI
+    itself reported (known_id, headless), else the newest session in the store that started after the run and
+    whose first RUN line is this run's own (session_match 'own'). Only when no session has that, a fallback
+    (sure=False, and 'how' says so): one that holds this run's RUN line after another run's, one that only
+    mentions the run id, or the only new session."""
     if agent == "claude":
         path = None
         try:
@@ -444,17 +501,27 @@ def find_session(agent: str, home: str, since: float, run_id: str, known_id: str
                     break
         except OSError:
             pass
-        return {"id": known_id, "path": path,
+        return {"id": known_id, "path": path, "sure": True,
                 "how": "set by ck-run with --session-id" + ("" if path else " (transcript not found)")}
-    cands = sorted(_candidates(agent, home, since), reverse=True)
-    needle = run_id.encode("utf-8")
-    for mt, sid, path in cands:
-        if _contains(path, needle):
-            return {"id": sid, "path": path, "how": "found in the session store (holds the run id)"}
+    cands = sorted(_candidates(agent, home, since), reverse=True)  # newest first
+    if known_id:
+        for _, sid, path in cands:
+            if sid == known_id:
+                return {"id": sid, "path": path, "sure": True, "how": "the session id the CLI printed"}
+    fallback = {}
+    for _, sid, path in cands:
+        m = session_match(path, run_id, agent)
+        if m == "own":
+            return {"id": sid, "path": path, "sure": True, "how": FOUND_OWN}
+        fallback.setdefault(m, (sid, path))
+    for m, how in (("quote", "this run's RUN line seen only after another run's (a quote?); may be wrong"),
+                   ("mention", "run id seen only as a mention, not as this run's RUN line; may be wrong")):
+        if m in fallback:
+            return {"id": fallback[m][0], "path": fallback[m][1], "sure": False, "how": how}
     if len(cands) == 1:
-        return {"id": cands[0][1], "path": cands[0][2],
+        return {"id": cands[0][1], "path": cands[0][2], "sure": False,
                 "how": "only new session in the store (run id not seen in it; may be wrong)"}
-    return {"id": None, "path": None, "how": f"not found ({len(cands)} new session(s) in the store)"}
+    return {"id": None, "path": None, "sure": False, "how": f"not found ({len(cands)} new session(s) in the store)"}
 
 
 def _strings(o):
@@ -468,9 +535,32 @@ def _strings(o):
             yield from _strings(v)
 
 
+# Log lines that the agent did not write: the prompt, tool output (a file it read may quote another run's result
+# with this run's id), CLI metadata. claude: type user (incl. tool_result); cursor: role user/tool; codex:
+# payload role user/developer, *_output items, command output events, user_message events, turn_context/session_meta.
+_NOT_AGENT = {"user", "tool", "system", "developer", "tool_result", "function_call_output", "custom_tool_call_output",
+              "local_shell_call_output", "exec_command_end", "mcp_tool_call_end", "commandexecution",
+              "command_execution", "user_message", "usermessage", "turn_context", "session_meta"}
+
+
+def _by_agent(obj) -> bool:
+    if not isinstance(obj, dict):
+        return True
+    keys = [obj.get("type"), obj.get("role")]
+    for k in ("payload", "message", "item"):
+        v = obj.get(k)
+        if isinstance(v, dict):
+            keys += [v.get("type"), v.get("role")]
+            if isinstance(v.get("item"), dict):
+                keys += [v["item"].get("type"), v["item"].get("role")]
+    return not any(isinstance(k, str) and k.lower() in _NOT_AGENT for k in keys)
+
+
 def recover_result(path: str | None, run_id: str):
     """(result_json, text) from a JSONL session log (claude, codex, cursor), or (None, ''): the last JSON
-    object in the log whose run_id is this run and that has a summary (the prompt's schema has neither)."""
+    object in the log whose run_id is this run and that has a summary (the prompt's schema has neither),
+    from a line the agent wrote (not the prompt or tool output). Call it only with a session find_session
+    is sure of: another run's session can quote this run's result."""
     if not path:
         return None, ""
     if os.path.isdir(path):
@@ -491,6 +581,8 @@ def recover_result(path: str | None, run_id: str):
         try:
             obj = json.loads(line)
         except ValueError:
+            continue
+        if not _by_agent(obj):
             continue
         for s in _strings(obj):
             if run_id in s and "summary" in s:

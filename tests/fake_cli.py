@@ -92,6 +92,53 @@ def write_session(ctrl, prompt, answer):
             f.write("SQLite format 3\0" + prompt)
         else:
             f.write("".join(json.dumps(x) + "\n" for x in lines))
+    if ctrl.get("decoy_session"):
+        write_decoy(parse_prompt(prompt)[0])
+
+
+DECOY_SID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+
+
+def write_decoy(this_run):
+    """2026-11-04 bug: a parallel run's session, NEWER than this one, whose prompt names this run id in its
+    CONCURRENCY line, and whose agent ran `git push`. It must never be taken for this run's session."""
+    home, sid, now = os.environ["HOME"], DECOY_SID, time.time()
+    other = f"{this_run[:17]}-devfab-writing-{AGENT}-47fc"
+    prompt = (f"ROLE: You are a worker for CK.\nRUN: {other} | agent: {AGENT} | kind: dispatch\nMODE: auto.\n"
+              "CONCURRENCY: other agents may be working at the same time, also in this workspace. Never edit paths "
+              f"that other live runs claimed: /x/phase3-scan (run {this_run}, {AGENT}).")
+    push = {"command": "git push origin main"}
+    if AGENT == "cursor":
+        path = os.path.join(home, ".cursor", "projects", "other-workspace", "agent-transcripts", sid, f"{sid}.jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(json.dumps({"role": "user", "message": {"content": [{"type": "text", "text": prompt}]}}) + "\n")
+            f.write(json.dumps({"role": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Shell", "input": push}]}}) + "\n")
+        stamp = os.path.dirname(path)  # the store is dated by the session folder
+    elif AGENT == "codex":
+        path = os.path.join(home, ".codex", "sessions", time.strftime("%Y/%m/%d"),
+                            f"rollout-{time.strftime('%Y-%m-%dT%H-%M-%S')}-{sid}.jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(json.dumps({"type": "session_meta", "payload": {"id": sid}}) + "\n")
+            f.write(json.dumps({"type": "response_item", "payload": {"type": "message", "role": "user",
+                                                                     "content": [{"text": prompt}]}}) + "\n")
+        stamp = path
+    elif AGENT == "agy":
+        import sqlite3
+        path = stamp = os.path.join(home, ".gemini", "antigravity-cli", "conversations", f"{sid}.db")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        con = sqlite3.connect(path)
+        con.execute("CREATE TABLE steps (idx integer, step_type integer, step_payload blob)")
+        con.execute("INSERT INTO steps VALUES (0, 14, ?)", (b"\x0a\x02" + prompt.encode(),))
+        con.execute("INSERT INTO steps VALUES (1, 132, ?)", (b"\x12\x08call_100\x1a\x0brun_command\x12\x01"
+                                                             + json.dumps(push).encode() + b"\x01\x02",))
+        con.commit()
+        con.close()
+    else:
+        return
+    os.utime(stamp, (now + 3, now + 3))  # newer than this run's own session
 
 
 def parse_prompt(p):
@@ -156,6 +203,8 @@ def write_tool_session(ctrl, prompt):
     """Headless cursor/agy: a session store holding the prompt and ctrl["tool_calls"] ([[name, {input}], ...]),
     in each CLI's real format (cursor JSONL transcript; agy SQLite steps with protobuf-like blobs)."""
     calls = ctrl.get("tool_calls")
+    if ctrl.get("decoy_session"):
+        write_decoy(parse_prompt(prompt)[0])
     if calls is None:
         return
     home, sid = os.environ["HOME"], str(uuid.uuid4())

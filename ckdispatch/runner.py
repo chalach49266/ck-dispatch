@@ -494,7 +494,8 @@ def _live_phase(cfg, spec, ws, run_dir, paths, lv, env, base=None):
     """Run the agent in an iTerm2/Terminal window. Returns (info, outcome); outcome None = fall back to headless."""
     base = base or {}
     info = {"requested": True, "used": False, "window_error": None, "state": None, "session_id": None,
-            "session_path": None, "session_how": None, "recovered_from_session": False, "summary_text": "",
+            "session_path": None, "session_how": None, "session_sure": None, "recovered_from_session": False,
+            "recover_skipped": None, "summary_text": "",
             "window": None}
     title = live.window_title(spec.agent, spec.title, spec.run_id)
     live.write_script(paths["live_sh"], run_dir=run_dir, cwd=lv["cmd"].cwd, env=env, argv=lv["cmd"].argv,
@@ -544,16 +545,18 @@ def _live_phase(cfg, spec, ws, run_dir, paths, lv, env, base=None):
         return info, None
     info["summary_text"] = _read_text(paths["summary"], 200_000)
     sess = live.find_session(spec.agent, cfg.home, t0 - 5, spec.run_id, known_id=lv["session_id"])
-    info.update(session_id=sess["id"], session_path=sess["path"], session_how=sess["how"])
+    info.update(session_id=sess["id"], session_path=sess["path"], session_how=sess["how"], session_sure=sess["sure"])
     structured = summarize.extract_structured(result_text)
     if not (isinstance(structured, dict) and "summary" in structured):
         structured = None
     final_text = result_text
-    if structured is None:
+    if structured is None and sess["sure"]:
         got, text = live.recover_result(sess["path"], spec.run_id)
         if got is not None:
             structured, final_text = got, text
             info["recovered_from_session"] = True
+    elif structured is None and sess["path"]:  # another run's session can quote this run's result
+        info["recover_skipped"] = f"session {sess['id']} is not confirmed as this run's ({sess['how']})"
     parsed = {"final_text": final_text, "structured": structured, "actions": [], "observed_reads": [],
               "session_id": sess["id"], "cost_usd": None, "agent_error": None, "finished_reason": None,
               "text_only": True}
@@ -653,13 +656,15 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
     review = None
     if reviewed:  # cursor/agy auto never asked before acting: mandatory read-only Claude check (postreview.py)
         try:
+            sess = postreview.session_info(spec.agent, cfg.home, t0 - 5, spec.run_id, live_info,
+                                           known_id=None if is_live else parsed.get("session_id"))
             review = postreview.run(
                 cfg, agent=spec.agent, run_id=spec.run_id, ws=ws, scopes=scopes, run_dir=run_dir,
                 run_paths={"result_md": paths["result_md"],
                            "stdout": None if is_live else os.path.join(run_dir, "stdout.log")},
                 snap=snap, roots=roots, changed=att["mine"], rc=rc, concurrent=others,
                 foreign=lambda p: claims.owner(cfg, ws, spec.check_mode, scopes, list(claim_paths), p, others)[0] is not None,
-                session_path=postreview.session_for(spec.agent, cfg.home, t0 - 5, spec.run_id, live_info),
+                session_path=sess["path"], session_how=sess["how"], session_sure=sess["sure"],
                 text="\n".join([parsed.get("final_text") or "", "" if is_live else stdout[-200_000:], stderr[-50_000:]]),
                 write_settings=lambda p: write_claude_settings(cfg, p), readonly=spec.auto_readonly)
         except Exception as e:  # never let the check crash ck-run; an unchecked run is a flagged run
@@ -672,7 +677,7 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
                       **{"from": "claude", "to": "CK"})
         if review["status"] == "ok" and review.get("actions"):
             # Text-only mentions were flags because Cursor/agy give no tool log on stdout. The review read the
-            # agent's real tool calls from its session store and found nothing: keep them as notes.
+            # agent's real tool calls from its own (confirmed) session and found nothing: keep them as notes.
             text_only = [f for f in rc["flags"] if "mentioned in output text (no tool log to confirm)" in f]
             rc["flags"] = [f for f in rc["flags"] if f not in text_only]
             rc["notes"] += [f"checked by the post-run review ({review['actions']} tool calls, ok): {f}" for f in text_only]
@@ -701,6 +706,8 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
                      f"{live_info['session_id'] or 'unknown'} ({live_info['session_how']})")
         if live_info["recovered_from_session"]:
             notes.append("result recovered from the session log: the agent did not write it to result.md")
+        if live_info.get("recover_skipped"):
+            notes.append(f"result not recovered from the session log: {live_info['recover_skipped']}")
         if not agent_summary and live_info["state"] != "timeout":
             notes.append("the agent did not write summary.md")
     reported = [_norm(f, ws.root) for f in (structured or {}).get("files_read") or [] if isinstance(f, str)]
@@ -776,7 +783,8 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
         "started_at": started, "finished_at": finished, "duration_s": duration,
         "paths": paths, "actions_count": len(parsed["actions"]),
         "live": ({k: v for k, v in live_info.items() if k != "summary_text"} if live_info else None),
-        "post_review": ({k: review[k] for k in ("status", "summary", "review_md", "findings", "error", "seconds")}
+        "post_review": ({k: review.get(k) for k in ("status", "summary", "review_md", "findings", "error", "seconds",
+                                                    "session")}
                         if review else None),
     }
     summary_text = "\n".join(lines) + "\n"

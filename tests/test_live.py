@@ -159,13 +159,13 @@ class TestLiveArgv(unittest.TestCase):
         with open(old, "w") as f:
             f.write(json.dumps({"x": rid}) + "\n")
         os.utime(old, (since - 100, since - 100))
-        schema_prompt = f"RUN: {rid}\n\"summary\" ...\n```json\n{json.dumps(json.load(open(RESULT_SCHEMA)))}\n```"
+        schema_prompt = f"RUN: {rid} | agent: codex | kind: dispatch\n\"summary\" ...\n```json\n{json.dumps(json.load(open(RESULT_SCHEMA)))}\n```"
         answer = f"Done.\n```json\n{json.dumps(good_result(rid))}\n```"
         new = os.path.join(day, "rollout-2026-11-02T12-00-00-01a19f11-b833-7261-b5c9-a533b41c418b.jsonl")
         with open(new, "w") as f:
             f.write(json.dumps({"payload": {"role": "user", "content": [{"text": schema_prompt}]}}) + "\n")
         s = live.find_session("codex", home, since, rid)
-        self.assertEqual((s["id"], s["path"]), ("01a19f11-b833-7261-b5c9-a533b41c418b", new))
+        self.assertEqual((s["id"], s["path"], s["sure"]), ("01a19f11-b833-7261-b5c9-a533b41c418b", new, True))
         self.assertEqual(live.recover_result(new, rid), (None, ""))  # the prompt's schema is not an answer
         with open(new, "a") as f:
             f.write(json.dumps({"payload": {"role": "assistant", "content": [{"text": answer}]}}) + "\n")
@@ -220,7 +220,8 @@ class TestLiveRuns(LiveBase):
                 if agent == "claude":
                     self.assertIn(["--session-id", sid], pairs(call["argv"]))
                 else:
-                    self.assertIn("holds the run id", res["live"]["session_how"])
+                    self.assertEqual(res["live"]["session_how"], live.FOUND_OWN)
+                    self.assertTrue(res["live"]["session_sure"])
                 self.assertTrue(open(os.path.join(rd, "result.md")).read().startswith("# Live answer"))
                 evs = [e for e in self.sb.ledger() if e["run_id"] == res["run_id"]]
                 self.assertEqual([e["event"] for e in evs], ["dispatch", "live_window_opened", "result"])

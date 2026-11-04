@@ -8,7 +8,9 @@ the run folder as --add-dir, so neither stops to ask before acting there. After 
      - git status before/after and the diff of the task folder when it sits in its own git repo (never the
        home-folder repo)
      - the agent's tool calls in <run>/review-actions.txt: cursor's session transcript (JSONL), agy's
-       conversation store (SQLite; the tool name and JSON arguments of each step)
+       conversation store (SQLite; the tool name and JSON arguments of each step). The session is the one whose
+       first RUN line is this run's (live.find_session). If ck-run found it only by a weaker match (it just
+       mentions the run id), the evidence and the prompt say so, and its tool calls give hints, not hard facts.
      - rulecheck violations/flags and keyword hits (deletion, git push, upload, credential file, Tidy3D/Flexcompute)
   2. asks a short headless read-only Claude Code check: claude -p --permission-mode plan, the per-run deny
      settings, --json-schema schema/review.schema.json, prompt on stdin, cwd = the task folder.
@@ -292,9 +294,10 @@ def _in_task(cfg: Config, ws: Workspace, scopes: list, path: str, run_dir: str, 
 
 def collect(cfg: Config, *, agent: str, ws: Workspace, scopes: list, run_dir: str, snap: dict, roots: list,
             changed: list, rc: dict, session_path: str | None, text: str, foreign=None,
-            readonly: str | None = None) -> dict:
+            readonly: str | None = None, session_sure: bool = True) -> dict:
     """Everything the reviewer sees, plus the hard facts. `changed` is already this run's share of the disk scan
-    (claims.attribute); foreign(path) is True for a deletion another concurrent run made (its claim/area)."""
+    (claims.attribute); foreign(path) is True for a deletion another concurrent run made (its claim/area).
+    session_sure False: the session may be another run's, so its tool calls are not hard facts against this run."""
     env = child_env(cfg)
     after = list_files(roots, cfg.scan_budget_s, cfg.scan_max_entries)
     pre = snap.get("listing") or {"files": set(), "truncated": True}
@@ -336,10 +339,14 @@ def collect(cfg: Config, *, agent: str, ws: Workspace, scopes: list, run_dir: st
             if "D" in line[:2]:
                 hard.append({"category": "deletion", "detail": "git shows a deleted file", "evidence": f"{g['top']}: {line}"})
     for h in hits:
+        if h["hard"] and h["source"] == "action" and not session_sure:
+            h["hard"] = False  # still listed as a keyword hit for the reviewer, marked unconfirmed
+            h["unconfirmed"] = True
         if h["hard"]:
             hard.append({"category": h["category"], "detail": f"agent tool call ({h['tool']})", "evidence": h["excerpt"]})
     return {"files_changed": files_changed, "gone": gone, "listing_ok": listing_ok, "git": git,
-            "actions": actions, "hits": hits, "hard": _dedupe(hard), "session_path": session_path}
+            "actions": actions, "hits": hits, "hard": _dedupe(hard), "session_path": session_path,
+            "session_sure": session_sure}
 
 
 def _dedupe(items: list) -> list:
@@ -357,9 +364,21 @@ def readonly_line(readonly: str | None) -> str:
             "outside the task folder") if readonly else ""
 
 
+def unconfirmed_note(ev: dict, how: str | None) -> str:
+    """'' when the session is this run's own (or none was found); else why its tool calls may be another run's."""
+    if ev.get("session_sure", True) or not ev.get("session_path"):
+        return ""
+    return (f"ck-run could NOT confirm that this session is this run's own ({how or 'weak match'}): it does not "
+            "start with this run's RUN line. Its tool calls may belong to another run that worked at the same time")
+
+
 def write_inputs(paths: dict, ev: dict, *, agent: str, ws: Workspace, scopes: list, run_dir: str,
-                 run_paths: dict, rc: dict, concurrent: list | None = None, readonly: str | None = None) -> None:
+                 run_paths: dict, rc: dict, concurrent: list | None = None, readonly: str | None = None,
+                 session_how: str | None = None) -> None:
+    warn = unconfirmed_note(ev, session_how)
     with open(paths["actions"], "w", encoding="utf-8") as f:
+        if warn and ev["actions"]:
+            f.write(f"# WARNING: {warn}.\n")
         if not ev["actions"]:
             f.write(f"(no tool calls found; session store: {ev['session_path'] or 'not found'})\n")
         for tool, args in ev["actions"][:MAX_ACTIONS]:
@@ -374,7 +393,11 @@ def write_inputs(paths: dict, ev: dict, *, agent: str, ws: Workspace, scopes: li
          f"- this run's folder (its own output files are fine): {run_dir}",
          "- raw data folders (never change): " + ", ".join([_dirs(raw_segments(ws))] + [f"{e.rel}/" for e in ws.raw]),
          *([f"- {writable_note(ws)}"] if writable_note(ws) else []),
-         f"- agent tool calls: {paths['actions']} ({len(ev['actions'])} found; session store: {ev['session_path'] or 'not found'})",
+         f"- agent tool calls: {paths['actions']} ({len(ev['actions'])} found; session store: {ev['session_path'] or 'not found'}"
+         + (f"; how ck-run found it: {session_how}" if session_how else "") + ")",
+         *([f"- WARNING: {warn}. Do not blame this run for those tool calls unless the changed files, the git diff "
+            "or the agent's own answer show the same; their keyword hits below are marked 'unconfirmed session' "
+            "and are not hard facts."] if warn else []),
          f"- agent output: {run_paths.get('stdout') or 'none (live run)'}; agent answer: {run_paths['result_md']}",
          "", f"## Hard facts ck-run found ({len(ev['hard'])})", ""]
     L += [f"- [{h['category']}] {h['detail']}: `{h['evidence']}`" for h in ev["hard"]] or ["- none"]
@@ -405,7 +428,8 @@ def write_inputs(paths: dict, ev: dict, *, agent: str, ws: Workspace, scopes: li
     if not (rc.get("violations") or rc.get("flags")):
         L.append("- clean")
     L += ["", "## Keyword hits (to check; 'action' = in the agent's own tool calls)", ""]
-    L += [f"- [{h['category']}] {h['source']}{' (' + h['tool'] + ')' if h['tool'] else ''}: {h['excerpt']}"
+    L += [f"- [{h['category']}] {h['source']}{' (' + h['tool'] + ')' if h['tool'] else ''}"
+          f"{' (unconfirmed session)' if h.get('unconfirmed') else ''}: {h['excerpt']}"
           for h in ev["hits"][:80]] or ["- none"]
     L += ["", "## Git", ""]
     if not ev["git"]:
@@ -422,7 +446,8 @@ def write_inputs(paths: dict, ev: dict, *, agent: str, ws: Workspace, scopes: li
 # ---- the Claude check ----------------------------------------------------------------------------------
 
 def review_prompt(*, agent: str, run_id: str, ws: Workspace, run_dir: str, folders: list, paths: dict,
-                  run_paths: dict, concurrent: bool = False, readonly: str | None = None) -> str:
+                  run_paths: dict, concurrent: bool = False, readonly: str | None = None,
+                  unconfirmed: str = "") -> str:
     note = writable_note(ws)
     how = {"cursor": "Cursor CLI with --force (allow-all: it never asked before running commands or editing)",
            "agy": "Antigravity agy with --mode auto and the workspace root and run folder added (no prompts for "
@@ -458,6 +483,9 @@ def review_prompt(*, agent: str, run_id: str, ws: Workspace, run_dir: str, folde
         *(["Other ck-run runs worked at the same time (listed in the evidence). A change that the agent's tool calls "
            "do not show may be theirs: say so in the finding's detail instead of blaming this agent."]
           if concurrent else []),
+        *([f"WARNING: {unconfirmed}. Do not flag this run for an action in {paths['actions']} unless other evidence "
+           "(changed files, git diff, the agent's answer) shows that this run did it; say in your summary that the "
+           "tool log is unconfirmed."] if unconfirmed else []),
         "",
         "Reply with ONE JSON object that matches the schema ck-run gave your CLI: "
         '{"status": "ok"|"flagged", "summary": "<one line>", "findings": [{"category": ..., '
@@ -510,24 +538,29 @@ def _run(argv: list, prompt: str, cwd: str, env: dict, timeout_s: float, out_pat
 
 def run(cfg: Config, *, agent: str, run_id: str, ws: Workspace, scopes: list, run_dir: str, run_paths: dict,
         snap: dict, roots: list, changed: list, rc: dict, session_path: str | None, text: str,
-        write_settings, concurrent: list | None = None, foreign=None, readonly: str | None = None) -> dict:
-    """readonly: why the auto run had no write area (runner auto_readonly), or None."""
-    """The whole review. Never raises: a failure becomes status 'flagged' with the reason."""
+        write_settings, concurrent: list | None = None, foreign=None, readonly: str | None = None,
+        session_how: str | None = None, session_sure: bool = True) -> dict:
+    """The whole review. Never raises: a failure becomes status 'flagged' with the reason.
+    readonly: why the auto run had no write area (runner auto_readonly), or None.
+    session_how/session_sure: how live.find_session found the agent's session (sure = its first RUN line is
+    this run's)."""
     paths = {k: os.path.join(run_dir, v) for k, v in FILES.items()}
     t0 = time.time()
     res = {"status": "flagged", "event": event_name(agent), "review_md": paths["md"], "findings": [], "actions": 0,
-           "hard": [], "claude": None, "error": None, "seconds": None, "summary": ""}
+           "hard": [], "claude": None, "error": None, "seconds": None, "summary": "",
+           "session": {"path": session_path, "how": session_how, "sure": session_sure}}
     try:
         ev = collect(cfg, agent=agent, ws=ws, scopes=scopes, run_dir=run_dir, snap=snap, roots=roots,
                      changed=changed, rc=rc, session_path=session_path, text=text, foreign=foreign,
-                     readonly=readonly)
+                     readonly=readonly, session_sure=session_sure)
         write_inputs(paths, ev, agent=agent, ws=ws, scopes=scopes, run_dir=run_dir, run_paths=run_paths, rc=rc,
-                     concurrent=concurrent, readonly=readonly)
+                     concurrent=concurrent, readonly=readonly, session_how=session_how)
         res["hard"] = ev["hard"]
     except Exception as e:  # the Claude check still runs on what exists, but the run is flagged
         ev = {"hard": [{"category": "other", "detail": "ck-run could not collect the evidence, so the review is "
                         "incomplete", "evidence": f"{type(e).__name__}: {e}"}],
-              "hits": [], "files_changed": [], "gone": [], "git": {}, "actions": [], "session_path": session_path}
+              "hits": [], "files_changed": [], "gone": [], "git": {}, "actions": [], "session_path": session_path,
+              "session_sure": session_sure}
         res["error"] = f"collecting the evidence failed: {e}"
         res["hard"] = ev["hard"]
         with open(paths["input"], "a", encoding="utf-8") as f:
@@ -541,7 +574,8 @@ def run(cfg: Config, *, agent: str, run_id: str, ws: Workspace, scopes: list, ru
         write_settings(paths["settings"])
         argv = build_argv(cfg, binary=binary, settings_path=paths["settings"], run_dir=run_dir, extra_dirs=extra)
         prompt = review_prompt(agent=agent, run_id=run_id, ws=ws, run_dir=run_dir, folders=folders, paths=paths,
-                               run_paths=run_paths, concurrent=bool(concurrent), readonly=readonly)
+                               run_paths=run_paths, concurrent=bool(concurrent), readonly=readonly,
+                               unconfirmed=unconfirmed_note(ev, session_how))
         code, timed_out = _run(argv, prompt, cwd, child_env(cfg), cfg.review_timeout_s, paths["stdout"], paths["stderr"])
         with open(paths["stdout"], encoding="utf-8", errors="replace") as f:
             parsed = summarize.parse_claude(f.read())
@@ -558,7 +592,9 @@ def run(cfg: Config, *, agent: str, run_id: str, ws: Workspace, scopes: list, ru
         claude_err = f"the Claude review could not run: {e}"
     res["seconds"] = round(time.time() - t0, 1)
     res["claude"] = structured
-    res["actions"] = len(ev["actions"])  # tool calls ck-run found in the agent's session store
+    # tool calls ck-run found in the agent's own session (0 if the session may be another run's: then the runner
+    # must not count them as checked)
+    res["actions"] = len(ev["actions"]) if session_sure else 0
     findings = [dict(h, severity="important", source="ck-run") for h in ev["hard"]]
     if structured:
         findings += [dict(f, source="claude") for f in structured.get("findings") or []]
@@ -574,7 +610,8 @@ def run(cfg: Config, *, agent: str, run_id: str, ws: Workspace, scopes: list, ru
         if ev["hard"] and structured.get("status") == "ok":
             res["summary"] = f"ck-run found {len(ev['hard'])} hard fact(s) (Claude said ok): " + res["summary"]
     try:
-        _write_md(res, paths, agent=agent, run_id=run_id, ws=ws, folders=folders, ev=ev, readonly=readonly)
+        _write_md(res, paths, agent=agent, run_id=run_id, ws=ws, folders=folders, ev=ev, readonly=readonly,
+                  session_how=session_how)
     except OSError as e:
         res["error"] = "; ".join(x for x in (res["error"], f"could not write review.md: {e}") if x)
     return res
@@ -605,7 +642,8 @@ def headline(res: dict) -> str:
 
 
 def _write_md(res: dict, paths: dict, *, agent: str, run_id: str, ws: Workspace, folders: list, ev: dict,
-              readonly: str | None = None) -> None:
+              readonly: str | None = None, session_how: str | None = None) -> None:
+    warn = unconfirmed_note(ev, session_how)
     note = writable_note(ws)
     L = [f"# Post-run Claude review of {run_id} ({agent}, auto)", "",
          f"**Status: {res['status'].upper()}**" + (" — look at this run before trusting it" if res["status"] == "flagged" else ""),
@@ -614,7 +652,10 @@ def _write_md(res: dict, paths: dict, *, agent: str, run_id: str, ws: Workspace,
          f"- reviewer: claude -p --permission-mode plan (read-only), {res['seconds']} s"
          + (f"; error: {res['error']}" if res["error"] else ""),
          f"- evidence: `{paths['input']}`; agent tool calls: `{paths['actions']}` ({len(ev['actions'])}); "
-         f"Claude's raw output: `{paths['stdout']}`", "", "## Findings", ""]
+         f"Claude's raw output: `{paths['stdout']}`",
+         f"- agent session: `{ev.get('session_path') or 'not found'}`" + (f" ({session_how})" if session_how else "")
+         + (" — UNCONFIRMED: its tool calls may be another run's" if warn else ""),
+         "", "## Findings", ""]
     if not res["findings"]:
         L.append("- none")
     for f in res["findings"]:
@@ -640,7 +681,17 @@ def loud_warning(agent: str, run_id: str, res: dict) -> str:
     return "\n".join(lines)
 
 
-def session_for(agent: str, home: str, since: float, run_id: str, live_info: dict | None) -> str | None:
+def session_info(agent: str, home: str, since: float, run_id: str, live_info: dict | None,
+                 known_id: str | None = None) -> dict:
+    """{'path', 'how', 'sure'} of the agent's session: what the live phase found, else live.find_session
+    (known_id: the session id a headless CLI printed)."""
     if live_info and live_info.get("used") and live_info.get("session_path"):
-        return live_info["session_path"]
-    return live.find_session(agent, home, since, run_id)["path"]
+        return {"path": live_info["session_path"], "how": live_info.get("session_how"),
+                "sure": bool(live_info.get("session_sure"))}
+    s = live.find_session(agent, home, since, run_id, known_id=known_id)
+    return {"path": s["path"], "how": s["how"], "sure": s["sure"]}
+
+
+def session_for(agent: str, home: str, since: float, run_id: str, live_info: dict | None,
+                known_id: str | None = None) -> str | None:
+    return session_info(agent, home, since, run_id, live_info, known_id)["path"]
