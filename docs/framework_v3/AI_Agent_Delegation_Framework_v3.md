@@ -16,9 +16,9 @@
 | Layers | User → CK → L2 lead bots → CLI workers | User → **CK (orchestrator only)** → ck-run → 4 agents. The lead bots are not a step in the ck-run flow. `--lead` remains an optional label on the packet. Domain context comes from the wiki-first prompt header and the workspace rule files |
 | Cursor safety | "`agent -p` without `--force` only proposes" | **Wrong.** `agent --help`: print mode "has access to all tools, including write and shell". v3 read mode = `--mode plan --sandbox enabled --trust` |
 | Who may edit workspace files | Edits only in `~/PhD_local`; Cursor propose-only | **D1:** codex, **D2:** agy, and cursor may edit a non-raw workspace subfolder after approval. Claude still edits only a `~/PhD_local` git repo |
-| Guards | Hard Rules in the prompt, plus CK's after-run checks | Code guards in ck-run: refused flags, an allowlist of mode values, write-scope rules, a clean environment, workspace locks, Claude deny rules, and an automatic rule check with exit codes 0–6 |
+| Guards | Hard Rules in the prompt, plus CK's after-run checks | Code guards in ck-run: refused flags, an allowlist of mode values, write-scope rules, a clean environment, per-path claims (no workspace lock, since 2026-11-03), Claude deny rules, and an automatic rule check with exit codes 0–6 |
 | Result | JSON result (§5.4) | The same schema **plus `summary` (1–10 lines) and `report_md`**. CK reads only `summary.md` |
-| Ledger | One line per run | **One line per event** (dispatch, review, result, refused, busy, accept), all with the same keys. `ck-run thread` prints the chain |
+| Ledger | One line per run | **One line per event** (dispatch, review, result, refused, busy, stale, accept), all with the same keys. `ck-run thread` prints the chain |
 | Cross-review | The second family gets the packet and the first result | The reviewer gets **file paths only, not content**. It marks AGREE / DISAGREE / UNSURE and adds NEW findings. `--blind` sends only the task |
 | Rule check | `git status` / `find -newer` | An mtime scan that reads metadata only, so OneDrive files are not downloaded. A transcript scan for credentials, cloud sims and push. Exit 4 = flagged, exit 5 = violation |
 | Session visibility | Not covered | §6: where each agent stores sessions, plus the resume commands |
@@ -32,7 +32,7 @@
 ```mermaid
 flowchart LR
   U["You (chalach)<br/>ask · approve · accept"] -->|task, approvals| CK["CK = Grok Bot<br/>orchestrator only"]
-  CK -->|"Mac shell (local-exec daemon)<br/>ck-run route / run"| R["ck-run on the Mac<br/>guards: refused flags, mode,<br/>write scope vs raw folders,<br/>clean env, workspace locks"]
+  CK -->|"Mac shell (local-exec daemon)<br/>ck-run route / run"| R["ck-run on the Mac<br/>guards: refused flags, mode,<br/>write scope vs raw folders,<br/>clean env, per-path claims"]
   R -->|read: plan / read-only| C["claude -p"]
   R -->|"edit: --approved + --write-scope"| X["codex exec"]
   R --> CU["agent -p (cursor)"]
@@ -125,7 +125,7 @@ Skill: `ck-delegate` (in `~/PhD_local/grok-bot-skills`). Per-agent steps: `claud
 | 3 | failed / timeout | agent error, no result, or killed at `--timeout` (default 1200 s, max 7200 s) |
 | 4 | flagged | needs a human look. **CK stops the chain** |
 | 5 | violation | a hard rule was broken. **CK stops the chain** |
-| 6 | busy | the workspace already has 2 runs, or an edit run |
+| 6 | busy | a `--claim` overlaps a path a live run claimed; nothing started (no workspace lock, 2026-11-03) |
 
 ---
 
@@ -166,7 +166,7 @@ Skill: `ck-delegate` (in `~/PhD_local/grok-bot-skills`). Per-agent steps: `claud
 - **Allowed scope:** a subfolder of the run's workspace (codex, cursor, agy), or a `~/PhD_local` folder that is its own git repo (all four).
 - **Refused scope:** the home folder or above; the whole workspace root; any folder that is, contains or sits inside a raw folder (checked on the literal and the real path, so a symlink can't get around it); `.claude/`, `.cursor/`, `.obsidian/`, `.venv/` (and in NV `.agents/`, venvs, `qick-dawg (backup)/`); any `.git`/`.venv`/`venv`/`node_modules` path; `~/PhD_local` itself, `ck-dispatch`, `agent_runs`, `grok-bot-agents` and the `~/PhD_local` copies of workspace trees; other OneDrive folders; **in NV, anything outside `NV Project/` and `AQS/`**.
 - **Enforcement:** Codex's OS sandbox lets it write only in `-C <scope>`, with network off. Cursor and agy start in the scope with their sandbox on. Claude gets deny rules. After every run the rule check looks at the disk.
-- **Locks:** an edit run locks its workspace. Read runs: at most 2 per workspace.
+- **No workspace lock** (chalach, 2026-11-03): any number of runs, any of the four agents, in the same or different workspaces, run at the same time. The old `SlotLock` (at most 2 runs per workspace; an edit or auto run took the whole workspace; else exit 6 busy) is gone. The one conflict ck-run prevents is two live runs editing the same file: an auto/edit run may `--claim` the files or folders it will edit, and a claim that overlaps a live run's claim is refused (exit 6). Every run has a flock-held record in `agent_runs/.claims/`; a crashed run's record is cleaned by the next run (ledger `stale`). The prompt lists other runs' claims (Claude also gets deny rules), and after a run the rule check gives changes in another run's claim, or only a concurrent writer could make, to that run; a file two concurrent runs both report changing is flagged. Details: README "Concurrent runs".
 
 ### 4.4 Raw folders (read-only), from the workspace rule files
 - **Device Fabrication** (`.agents/AGENTS.md:78-83`, `CLAUDE.md:73-78`): `Projects/CK Design/`, `Projects/Microwave Design/`, `Fabrication/`, `Projects/ESEM/`, `Projects/Simulation/`, `Projects/Result/`, `Idea Inspiration/`, `Paper/`, `Material/`, `Design Yard/`, `Archive/`, `Photonics_Ecosystem/repos/`, `Microwave_Ecosystem/repos/`.
@@ -215,7 +215,7 @@ chalach, 2026-11-03: *"do cursor allow everything setting and also have claude c
 
 **Per run:** `~/PhD_local/agent_runs/<run_id>/` (mode 700). Files: `task.md`, `prompt.md`, `packet.json`, `cmd.txt` (first lines: binary, `# cwd:`, env names, prompt path), `claude-settings.json` (claude only), `stdout.log`, `stderr.log`, `last.md` (codex only), `result.json`, `result.md`, `summary.md`, `rulecheck.json`. Run id format: `YYYY-MM-DDTHHMMSS-<ws>-<task_type>-<agent>-<hex4>`.
 
-**Ledger:** `~/PhD_local/agent_runs/ledger.jsonl`, one JSON line per event (`dispatch`, `review`, `result`, `refused`, `busy`, `accept`; since 2026-11-03 also `live_window_opened` with the iTerm2 window id, `live_fallback` with the reason, and `cursor_review` / `agy_review` with the D7 review status). Every line has the same keys: `event, run_id, parent_run_id, from, to, via, title, workspace, task_type, agent, model, mode, approved, write_scope, prompt_path, response_path, summary_path, files_read, files_changed, status, accepted, ts, started_at, finished_at, duration_s, exit_code, note`. A review line goes from the reviewed agent to the reviewer, via CK.
+**Ledger:** `~/PhD_local/agent_runs/ledger.jsonl`, one JSON line per event (`dispatch`, `review`, `result`, `refused`, `busy` (claim conflict), `stale` (crashed ck-run), `accept`; since 2026-11-03 also `live_window_opened` with the iTerm2 window id, `live_fallback` with the reason, and `cursor_review` / `agy_review` with the D7 review status). Every line has the same keys: `event, run_id, parent_run_id, from, to, via, title, workspace, task_type, agent, model, mode, approved, write_scope, claims, prompt_path, response_path, summary_path, files_read, files_changed, status, accepted, ts, started_at, finished_at, duration_s, exit_code, note`. A review line goes from the reviewed agent to the reviewer, via CK.
 
 **Agent sessions** (all persist) [verified 2026-11-02 for claude, cursor, agy in step 3; codex in step 5]:
 

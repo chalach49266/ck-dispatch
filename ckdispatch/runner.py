@@ -1,7 +1,6 @@
 """One run: guards -> run dir -> agent with timeout -> parse -> rulecheck -> ledger -> summary on stdout."""
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
@@ -14,7 +13,7 @@ import time
 import uuid
 from datetime import datetime
 
-from . import VERSION, ledger, live, postreview, route, rulecheck, summarize
+from . import VERSION, claims, ledger, live, postreview, route, rulecheck, summarize
 from . import prompt as P
 from .config import CLAUDE_GUARD_BASE, PACKET_SCHEMA, REPO, RESULT_SCHEMA, Config, Workspace, inside
 from .errors import Refused
@@ -41,6 +40,7 @@ class Spec:
         self.mode = kw.get("mode") or "auto"
         self.approved = kw.get("approved")
         self.scopes_in = list(kw.get("scopes_in") or [])
+        self.claims_in = list(kw.get("claims_in") or [])  # --claim: paths this run will edit (claims.py)
         self.read_dirs = list(kw.get("read_dirs") or [])
         self.timeout_s = kw.get("timeout_s")
         self.parent_run_id = kw.get("parent_run_id")
@@ -73,39 +73,30 @@ def read_task_file(path: str) -> str:
     return text
 
 
-class SlotLock:
-    """At most N runs per workspace; an edit run takes every slot (so nothing else changes files meanwhile)."""
-
-    def __init__(self, cfg: Config, ws_key: str, exclusive: bool):
-        self.dir = os.path.join(cfg.runs_dir, ".locks")
-        self.paths = [os.path.join(self.dir, f"{ws_key}.slot{i}.lock") for i in range(max(1, cfg.max_runs_per_workspace))]
-        self.exclusive = exclusive
-        self.fds = []
-
-    def acquire(self) -> bool:
-        os.makedirs(self.dir, mode=0o700, exist_ok=True)
-        for p in self.paths:
-            fd = os.open(p, os.O_RDWR | os.O_CREAT, 0o600)
+def reserve_run_dir(cfg: Config, make_id) -> tuple:
+    """Pick a run id whose folder did not exist and create that folder (mkdir is atomic: two ck-runs started in
+    the same second with the same workspace, task type and agent can never share a folder)."""
+    old_umask = os.umask(0o077)
+    try:
+        os.makedirs(cfg.runs_dir, mode=0o700, exist_ok=True)
+        for _ in range(100):
+            rid = make_id()
+            run_dir = os.path.join(cfg.runs_dir, rid)
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                os.close(fd)
-                if self.exclusive:
-                    self.release()
-                    return False
+                os.mkdir(run_dir, 0o700)
+                return rid, run_dir
+            except FileExistsError:
                 continue
-            self.fds.append(fd)
-            if not self.exclusive:
-                return True
-        return bool(self.fds) and (not self.exclusive or len(self.fds) == len(self.paths))
+    finally:
+        os.umask(old_umask)
+    raise Refused("could not reserve a unique run folder")
 
-    def release(self) -> None:
-        for fd in self.fds:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            finally:
-                os.close(fd)
-        self.fds = []
+
+def _unreserve(run_dir: str) -> None:
+    try:
+        os.rmdir(run_dir)  # only if still empty
+    except OSError:
+        pass
 
 
 def default_auto_scopes(ws: Workspace) -> list:
@@ -151,10 +142,12 @@ def outside_writable(ws: Workspace) -> tuple:
     return dirs, files
 
 
-def write_claude_settings(cfg: Config, path: str, live_run_dir: str | None = None, auto_ws=None) -> None:
+def write_claude_settings(cfg: Config, path: str, live_run_dir: str | None = None, auto_ws=None,
+                          other_claims: list | None = None) -> None:
     """Deny rules for one run. Headless: no edits anywhere in agent_runs. Live: the agent must write
     result.md and summary.md in its own run folder, so agent_runs is denied piece by piece instead: the
-    ledger, state, locks, every other run folder that exists now, and ck-run's own files in this run."""
+    ledger, state, the run registry, every other run folder that exists now, and ck-run's own files in this
+    run. other_claims: paths other live runs claimed when this run started (never edit them)."""
     with open(CLAUDE_GUARD_BASE, encoding="utf-8") as f:
         base = json.load(f)
     deny = list(base["permissions"]["deny"])
@@ -175,12 +168,16 @@ def write_claude_settings(cfg: Config, path: str, live_run_dir: str | None = Non
     targets += [os.path.realpath(REPO)] + ([] if live_run_dir else run_bases)
     for t in dict.fromkeys(targets):
         deny.append(f"Edit(/{t}/**)")  # '//abs/path' = absolute path in Claude permission rules
+    for c in dict.fromkeys(other_claims or []):  # a claim may be a file or a folder (or not exist yet)
+        deny += [f"Edit(/{c})", f"Edit(/{c}/**)"]
     if live_run_dir:
         rid = os.path.basename(live_run_dir)
         for rb in run_bases:
-            deny += [f"Edit(/{rb}/ledger.jsonl)", f"Edit(/{rb}/state.json)", f"Edit(/{rb}/.locks/**)"]
+            deny += [f"Edit(/{rb}/ledger.jsonl)", f"Edit(/{rb}/state.json)", f"Edit(/{rb}/.locks/**)",
+                     f"Edit(/{rb}/{claims.DIR}/**)"]
             try:
-                others = sorted(n for n in os.listdir(rb) if n not in (rid, ".locks") and os.path.isdir(os.path.join(rb, n)))
+                others = sorted(n for n in os.listdir(rb) if n != rid and not n.startswith(".")
+                                and os.path.isdir(os.path.join(rb, n)))
             except OSError:
                 others = []
             deny += [f"Edit(/{rb}/{n}/**)" for n in others]
@@ -211,7 +208,7 @@ def _on_sigterm(signum, frame):
     raise KeyboardInterrupt()
 
 
-def run_child(cmd, prompt_text: str, env: dict, run_dir: str, timeout_s: int):
+def run_child(cmd, prompt_text: str, env: dict, run_dir: str, timeout_s: int, on_start=None):
     argv = cmd.final_argv(prompt_text)
     timed_out = interrupted = False
     old = signal.signal(signal.SIGTERM, _on_sigterm)
@@ -219,6 +216,11 @@ def run_child(cmd, prompt_text: str, env: dict, run_dir: str, timeout_s: int):
         proc = subprocess.Popen(argv, cwd=cmd.cwd, env=env,
                                 stdin=subprocess.PIPE if cmd.stdin_prompt else subprocess.DEVNULL,
                                 stdout=out, stderr=err, start_new_session=True, close_fds=True)
+        if on_start is not None:  # the run record keeps the agent's pid: if ck-run dies, claims stay while it runs
+            try:
+                on_start(proc.pid)
+            except Exception:
+                pass
         try:
             proc.communicate(input=prompt_text.encode("utf-8") if cmd.stdin_prompt else None, timeout=timeout_s)
         except subprocess.TimeoutExpired:
@@ -272,8 +274,13 @@ def _validate_read_dirs(cfg: Config, dirs: list) -> list:
 
 def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
     ws = spec.ws
-    spec.run_id = new_run_id(ws.key, spec.task_type, spec.agent)
-    run_dir = os.path.join(cfg.runs_dir, spec.run_id)
+    make_id = lambda: new_run_id(ws.key, spec.task_type, spec.agent)  # noqa: E731
+    reserved = not dry_run and spec.agent in AGENTS and bool(TASK_TYPE_RE.match(spec.task_type or ""))
+    if reserved:  # the run folder is created now, so no other ck-run can get the same id
+        spec.run_id, run_dir = reserve_run_dir(cfg, make_id)
+    else:
+        spec.run_id = make_id()
+        run_dir = os.path.join(cfg.runs_dir, spec.run_id)
     paths = {k: os.path.join(run_dir, v) for k, v in {
         "prompt": "prompt.md", "task": "task.md", "result_md": "result.md", "result_json": "result.json",
         "summary": "summary.md", "settings": "claude-settings.json", "packet": "packet.json",
@@ -282,6 +289,7 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
     base = {"run_id": spec.run_id, "parent_run_id": spec.parent_run_id, "title": spec.title,
             "workspace": ws.key, "task_type": spec.task_type, "agent": spec.agent, "model": spec.model,
             "mode": spec.mode, "approved": spec.approved, "via": "CK" if spec.kind == "review" else None}
+    claim_paths = []
     try:
         if spec.agent not in AGENTS:
             raise Refused(f"unknown agent '{spec.agent}'")
@@ -311,6 +319,8 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
         else:
             raise Refused(f"forbidden mode '{spec.mode}'")
         read_dirs = _validate_read_dirs(cfg, spec.read_dirs)
+        claim_paths = claims.normalize(cfg, ws, spec.mode, spec.kind, scopes, spec.claims_in)
+        base["claims"] = claim_paths
         cmd = build(cfg, ws, spec.agent, mode=spec.mode, scopes=scopes, model=spec.model, run_dir=run_dir,
                     schema_path=RESULT_SCHEMA, extra_read_dirs=read_dirs, timeout_s=int(spec.timeout_s),
                     claude_settings_path=paths["settings"])
@@ -321,14 +331,53 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
                 cfg, ws, spec.agent, mode=spec.mode, scopes=scopes, model=spec.model, run_dir=run_dir,
                 extra_read_dirs=read_dirs, claude_settings_path=paths["settings_live"], session_id=sid)}
     except Refused as e:
+        if reserved:
+            _unreserve(run_dir)
         if not dry_run:
             ledger.append(cfg.runs_dir, **base, event="refused", status="refused", note=str(e),
                           **{"from": spec.from_, "to": spec.agent})
         print(f"ck-run: REFUSED: {e}", file=sys.stderr)
         return EXIT["refused"]
 
+    # No workspace lock (chalach 2026-11-03): any number of runs, any agents, same or other workspaces. Only a
+    # --claim that overlaps a live run's claim is refused (claims.py). Every run is registered, claims or not.
+    held = None
+    if dry_run:
+        others_live, _ = claims.active(cfg.runs_dir)
+    else:
+        try:
+            got = claims.acquire(cfg.runs_dir, {
+                "run_id": spec.run_id, "agent": spec.agent, "workspace": ws.key, "mode": spec.mode, "kind": spec.kind,
+                "title": spec.title, "task_type": spec.task_type, "claims": claim_paths,
+                "write_scope": [s["path"] for s in scopes], "run_dir": run_dir})
+        except BaseException:
+            _unreserve(run_dir)
+            raise
+        claims.log_stale(cfg.runs_dir, got["stale"], by=f"run {spec.run_id}")
+        if not got["ok"]:
+            _unreserve(run_dir)
+            note = "; ".join(f"claim {m} overlaps {t}, claimed by live {claims.describe(r)}"
+                             for m, t, r in got["conflicts"][:5])
+            note = f"file claim conflict: {note}; nothing was started"
+            ledger.append(cfg.runs_dir, **base, event="busy", status="busy", note=note[:1000],
+                          **{"from": spec.from_, "to": spec.agent})
+            print(f"ck-run: BUSY: {note}. Wait for that run, or claim other paths "
+                  f"(runs without overlapping claims always start).", file=sys.stderr)
+            return EXIT["busy"]
+        held, others_live = got["held"], got["others"]
+    try:
+        return _prepare_and_run(cfg, spec, ws, scopes, cmd, lv, run_dir, paths, base, claim_paths,
+                                others_live, held, dry_run)
+    finally:
+        if held is not None:
+            held.release()
+
+
+def _prepare_and_run(cfg, spec, ws, scopes, cmd, lv, run_dir, paths, base, claim_paths, others_live, held,
+                     dry_run) -> int:
+    other_claims = [(c, r) for r in others_live for c in r.get("claims") or []]
     head = P.header(ws=ws, run_id=spec.run_id, agent=spec.agent, kind=spec.kind, mode=spec.mode,
-                    approved=spec.approved, scopes=scopes)
+                    approved=spec.approved, scopes=scopes, claims=claim_paths, other_claims=other_claims)
     foot = P.footer(run_id=spec.run_id, include_schema=not SCHEMA_ENFORCED_BY_FLAG[spec.agent], schema_path=RESULT_SCHEMA)
     prompt_text = P.assemble(head, spec.title, spec.task_text, foot)
     env = child_env(cfg)
@@ -343,7 +392,8 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
     if lv:
         lv["prompt"] = P.assemble(
             P.header(ws=ws, run_id=spec.run_id, agent=spec.agent, kind=spec.kind, mode=spec.mode,
-                     approved=spec.approved, scopes=scopes, live_outbox=run_dir),
+                     approved=spec.approved, scopes=scopes, live_outbox=run_dir, claims=claim_paths,
+                     other_claims=other_claims),
             spec.title, spec.task_text,
             P.footer(run_id=spec.run_id, include_schema=True, schema_path=RESULT_SCHEMA, live_outbox=run_dir))
         lines += [f"# live (default; --no-live for headless only): an {cfg.live_terminal} window runs {paths['live_sh']},",
@@ -355,21 +405,15 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
                   f"{'--force, allow-all' if spec.agent == 'cursor' else '--mode auto + workspace/run --add-dir'}; chalach 2026-11-03):",
                   f"# claude -p --permission-mode plan --json-schema schema/review.schema.json over {run_dir}/review-input.md"
                   f" -> {run_dir}/review.md, ledger event {postreview.event_name(spec.agent)} ok|flagged"]
+    lines.append(f"# claims (no workspace lock; only overlapping claims are refused): "
+                 + (", ".join(claim_paths) or "none")
+                 + (f"; other live runs claim: {', '.join(c for c, _ in other_claims)}" if other_claims else ""))
     cmd_txt = "\n".join(lines + [""])
     if dry_run:
         sys.stdout.write(cmd_txt)
         return 0
-
-    lock = SlotLock(cfg, ws.key, exclusive=spec.mode in ("edit", "auto"))
-    if not lock.acquire():
-        note = f"{ws.name} already has {cfg.max_runs_per_workspace} run(s), or an edit run, in progress"
-        ledger.append(cfg.runs_dir, **base, event="busy", status="busy", note=note, **{"from": spec.from_, "to": spec.agent})
-        print(f"ck-run: BUSY: {note}; try again later", file=sys.stderr)
-        return EXIT["busy"]
-    try:
-        return _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, paths, base, lv)
-    finally:
-        lock.release()
+    return _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, paths, base, lv,
+                           claim_paths=claim_paths, other_claims=[c for c, _ in other_claims], held=held)
 
 
 def _write_replace(path: str, text: str) -> None:
@@ -463,31 +507,29 @@ def _live_phase(cfg, spec, ws, run_dir, paths, lv, env, base=None):
     return info, (code, w["state"] == "timeout", w["state"] == "interrupted", parsed)
 
 
-def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, paths, base, lv=None) -> int:
-    old_umask = os.umask(0o077)
-    try:
-        os.makedirs(cfg.runs_dir, mode=0o700, exist_ok=True)
-        os.mkdir(run_dir, 0o700)
-    finally:
-        os.umask(old_umask)
+def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, paths, base, lv=None, *,
+                    claim_paths=(), other_claims=(), held=None) -> int:
+    """One run in its reserved folder, registered in the run registry (claims.py) by execute()."""
     started = ledger.now_iso()
     _write(paths["task"], spec.task_text)
     _write(paths["prompt"], prompt_text)
     _write(paths["cmd"], cmd_txt)
     if spec.agent == "claude":
-        write_claude_settings(cfg, paths["settings"], auto_ws=ws if spec.mode == "auto" else None)
+        write_claude_settings(cfg, paths["settings"], auto_ws=ws if spec.mode == "auto" else None,
+                              other_claims=other_claims)
     if lv:
         _write(paths["prompt_live"], lv["prompt"])
         if spec.agent == "claude":
             write_claude_settings(cfg, paths["settings_live"], live_run_dir=run_dir,
-                                  auto_ws=ws if spec.mode == "auto" else None)
+                                  auto_ws=ws if spec.mode == "auto" else None, other_claims=other_claims)
     packet = {
         "run_id": spec.run_id, "kind": spec.kind, "parent_run_id": spec.parent_run_id, "from": spec.from_,
         "workspace": ws.key, "workspace_root": ws.root, "lead": spec.lead, "task_type": spec.task_type,
         "title": spec.title, "worker": spec.agent, "model": spec.model, "cwd": cmd.cwd,
         "mode": {"read": "plan", "edit": "edit-approved", "auto": "auto"}[spec.mode],
         "approved_actions": [spec.approved] if spec.mode == "edit" else [],
-        "write_scope": [s["path"] for s in scopes], "deliverable": "result.md + result.json + summary.md",
+        "write_scope": [s["path"] for s in scopes], "claims": list(claim_paths),
+        "deliverable": "result.md + result.json + summary.md",
         "budget": {"timeout_s": int(spec.timeout_s)}, "review": spec.review, "task_source": spec.task_source,
         "created_at": started, "config_path": cfg.path, "ck_dispatch_version": VERSION}
     perr = validate(packet, load_schema(PACKET_SCHEMA))
@@ -512,7 +554,8 @@ def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, 
     if lv:
         live_info, outcome = _live_phase(cfg, spec, ws, run_dir, paths, lv, env, base)
     if outcome is None:
-        exit_code, timed_out, interrupted = run_child(cmd, prompt_text, env, run_dir, int(spec.timeout_s))
+        on_start = (lambda pid: held.update(agent_pid=pid)) if held is not None else None
+        exit_code, timed_out, interrupted = run_child(cmd, prompt_text, env, run_dir, int(spec.timeout_s), on_start)
         parsed = summarize.parse(spec.agent, run_dir)
         stdout = _read_text(os.path.join(run_dir, "stdout.log"))
         stderr = _read_text(os.path.join(run_dir, "stderr.log"), 200_000)
@@ -524,12 +567,23 @@ def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, 
     finished = ledger.now_iso()
 
     scan = rulecheck.scan_changed(roots, marker_ns, cfg.scan_budget_s, cfg.scan_max_entries)
-    cls = rulecheck.classify(cfg, ws, spec.mode, scopes, scan["changed"], run_dir)
+    # Other runs may have worked at the same time (no workspace lock): split the scan's changes between them.
+    others = claims.concurrent(cfg, spec.run_id, marker_ns / 1e9, time.time())
+    att = claims.attribute(cfg, ws, spec.mode, scopes, list(claim_paths), scan["changed"], others)
+    cls = rulecheck.classify(cfg, ws, spec.mode, scopes, att["mine"], run_dir)
     tr = rulecheck.scan_transcript(parsed, stdout, stderr, agent=spec.agent, mode=spec.mode)
     rc = {"violations": cls["violations"] + tr["violations"], "flags": cls["flags"] + tr["flags"],
-          "notes": cls["notes"] + tr.get("notes", []), "changed_in_scope": cls["changed_in_scope"],
+          "notes": cls["notes"] + tr.get("notes", []) + att["notes"], "changed_in_scope": cls["changed_in_scope"],
           "scan": {"roots": roots, "entries": scan["entries"],
-                   "truncated": scan["truncated"], "seconds": scan["seconds"]}}
+                   "truncated": scan["truncated"], "seconds": scan["seconds"]},
+          "claims": list(claim_paths),
+          "concurrent": [{k: o.get(k) for k in ("run_id", "agent", "workspace", "mode", "claims", "finished")}
+                         for o in others],
+          "changed_by_others": att["theirs"]}
+    if spec.mode in claims.WRITER_MODES and others:
+        st = parsed["structured"] if isinstance(parsed["structured"], dict) else {}
+        mine_rep = [_norm(f, ws.root) for f in st.get("files_changed") or [] if isinstance(f, str) and f.strip()]
+        rc["flags"] += claims.same_file(cfg, mine_rep, others)
 
     review = None
     if reviewed:  # cursor/agy auto never asked before acting: mandatory read-only Claude check (postreview.py)
@@ -538,7 +592,8 @@ def _run_locked(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, 
                 cfg, agent=spec.agent, run_id=spec.run_id, ws=ws, scopes=scopes, run_dir=run_dir,
                 run_paths={"result_md": paths["result_md"],
                            "stdout": None if is_live else os.path.join(run_dir, "stdout.log")},
-                snap=snap, roots=roots, changed=scan["changed"], rc=rc,
+                snap=snap, roots=roots, changed=att["mine"], rc=rc, concurrent=others,
+                foreign=lambda p: claims.owner(cfg, ws, spec.mode, scopes, list(claim_paths), p, others)[0] is not None,
                 session_path=postreview.session_for(spec.agent, cfg.home, t0 - 5, spec.run_id, live_info),
                 text="\n".join([parsed.get("final_text") or "", "" if is_live else stdout[-200_000:], stderr[-50_000:]]),
                 write_settings=lambda p: write_claude_settings(cfg, p))

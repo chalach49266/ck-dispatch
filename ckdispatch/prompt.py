@@ -10,7 +10,8 @@ SUMMARY_MAX_CHARS = 200
 
 
 def header(*, ws: Workspace, run_id: str, agent: str, kind: str, mode: str,
-           approved: str | None, scopes: list, live_outbox: str | None = None) -> str:
+           approved: str | None, scopes: list, live_outbox: str | None = None,
+           claims: list | None = None, other_claims: list | None = None) -> str:
     rules = ", ".join(ws.rule_files)
     first = ", ".join(ws.wiki_first)
     if live_outbox:
@@ -47,6 +48,14 @@ def header(*, ws: Workspace, run_id: str, agent: str, kind: str, mode: str,
         L.append(f'MODE: edit, approved by the user ("{approved}"). Change files ONLY inside: {where}. '
                  + (f"Also write the two output files {outputs}. Do not write anywhere else."
                     if live_outbox else "Do not write anywhere else."))
+    if mode in ("auto", "edit"):
+        # chalach 2026-11-03: several agents may work at once, also in this workspace; only claimed paths are reserved
+        others = "; ".join(f"{c} (run {r.get('run_id')}, {r.get('agent')})" for c, r in other_claims or [])
+        L.append("CONCURRENCY: other agents may be working at the same time, also in this workspace. "
+                 + (f"This run claimed: {', '.join(claims)}. " if claims else "")
+                 + (f"Never edit paths that other live runs claimed: {others}." if others
+                    else "No other live run has claimed a path right now.")
+                 + " Do not undo or overwrite changes you did not make; report files you changed in files_changed.")
     raw = ", ".join(f"{e.rel}/" for e in ws.raw)
     if ws.writable_only:
         own = ", ".join(f"{e.rel}/" for e in ws.writable_only)

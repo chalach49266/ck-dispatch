@@ -15,7 +15,7 @@ not run live (the `merge-gate` mod in Claude Code denies `codex exec`). **Live v
 ```
 ck-run run    --agent claude|codex|cursor|agy --workspace devfab|nv|washu --title T --prompt-file F
               [--task-type T] [--model M] [--read-dir D]... [--timeout S] [--parent RUN_ID] [--lead L]
-              [--mode auto|read|edit] [--write-scope FOLDER ...] [--interactive]
+              [--mode auto|read|edit] [--write-scope FOLDER ...] [--claim PATH ...] [--interactive]
               (edit also needs --approved "<user's words + time>")
               [--live | --no-live] [--dry-run]
 ck-run review RUN_ID --by AGENT [--blind] [--focus TEXT] [--model M] [--timeout S] [--live | --no-live]
@@ -24,6 +24,7 @@ ck-run accept RUN_ID [--reject] [--by CK|user] [--note TEXT]
 ck-run show   RUN_ID
 ck-run route  --task-type T [--review-of AGENT]
 ck-run limits [--clear [AGENT]]
+ck-run active                 live runs and their claims (JSON); cleans records of crashed runs
 ```
 
 `run` and `review` print **only** the `summary.md` path (line 1) and the summary (max 10 lines) on stdout.
@@ -37,7 +38,7 @@ The status is the exit code. When the status is not `ok`, one line also goes to 
 | 3 | failed / timeout | agent error, no result, or killed at `--timeout` (default 1200 s) |
 | 4 | flagged | needs a human look (see rule check) |
 | 5 | violation | a hard rule was broken (see rule check) |
-| 6 | busy | workspace already has 2 runs, or an edit run |
+| 6 | busy | a `--claim` overlaps a path that a live run claimed (nothing started). No workspace lock: see Concurrent runs |
 
 `--task-type` keys for `route`: wiki_synthesis, python_debug, refactor, fdtd_review, microwave_review,
 slides_web, writing, quick_lookup, multi_file_diff, wiki_lint, general (Framework v2 §4 plus agy lanes).
@@ -112,7 +113,8 @@ else the workspace).
 
 - Write area: `--write-scope` folders if given (same rules as edit mode, no `--approved` needed), else the workspace
   root minus raw folders and protected rule files. rulecheck flags any change outside it, in a raw folder or a rule file.
-- Auto takes the workspace's exclusive lock (like edit). Reviews stay read-only.
+- No workspace lock (chalach 2026-11-03): auto, edit and read runs of any agents run at the same time, also in one
+  workspace; only overlapping `--claim` paths are refused (see Concurrent runs). Reviews stay read-only.
 - The prompt tells the agent to work on its own, mark unknowns, keep `PROGRESS.md`, and end the summary with
   "Questions for chalach" for Grok Bot to relay.
 - Still refused in every mode: bypassPermissions, `dangerously-*`, `-f`/`--yolo`, `--force` (except cursor auto,
@@ -165,7 +167,8 @@ activated, and every fallback is loud (see below).
 - **Read mode + these two writes**: plan / read-only modes stop the agent from writing them, so its CLI asks
   you first (claude: approve leaving plan mode, then the writes; codex: approve the write; cursor and agy:
   switch out of plan mode). The live Claude settings allow edits only in this run's folder (deny rules still
-  cover both workspaces, the ledger, state, locks, every other run folder and ck-run's own files in this run).
+  cover both workspaces, the ledger, state, the run registry, every other run folder and ck-run's own files in
+  this run).
   If you would rather not approve, quit the agent: ck-run then looks for the answer JSON in the agent's
   session log (claude, codex, cursor JSONL; not agy's SQLite store) and marks the run done with it.
 - **Session id**: claude gets `--session-id <uuid>` from ck-run; for codex, cursor and agy ck-run finds the
@@ -192,7 +195,45 @@ activated, and every fallback is loud (see below).
   anything outside `NV Project/` and `AQS/`; in WashU HW, anything outside a course's `solutions/` or `prep/`.
 - Enforcement: codex's OS sandbox lets it write only in `-C <scope>` (network off). Cursor and agy start in
   the scope with their sandbox on. Claude gets deny rules. After every run the rule check looks at the disk.
-- An edit run locks its workspace (no other run there at the same time). Read runs: at most 2 per workspace.
+- No workspace lock: other runs may work in the same workspace at the same time (see Concurrent runs).
+
+## Concurrent runs (chalach 2026-11-03)
+
+Any number of runs, any of the four agents, in the same or different workspaces, start at once. Nothing waits
+and nothing is serialized. Until 2026-11-03 ck-run had a `SlotLock` (`runner.py`): flock slot files
+`agent_runs/.locks/<ws>.slot<i>.lock`, at most `max_runs_per_workspace` (2) runs per workspace, and an edit or
+auto run took every slot, so a second run in that workspace got `busy` (exit 6). That lock and the config key are
+gone (an old key is ignored). The one conflict ck-run still prevents is two live runs editing the same file
+(`ckdispatch/claims.py`):
+
+- **Claims.** An auto or edit run may declare the files or folders it will edit: `--claim PATH` (repeatable;
+  relative to the workspace root or absolute; may not exist yet; must be inside the run's write area). A claim that
+  is the same as, inside, or around a path a live run claimed is refused: ledger `busy` with the other run's id,
+  agent and pid in the note, exit 6, no agent started, no run folder left. Read runs, reviews and runs without
+  claims never block anyone and are never blocked. `--claim` with `--mode read` is refused (exit 2).
+- **Run registry.** Every run has `agent_runs/.claims/<run_id>.json` (agent, workspace, mode, claims, write scope,
+  pid, agent pid) while ck-run works on it, flock-held by ck-run. Check-and-register runs under
+  `.claims/registry.lock`, held for milliseconds. `ck-run active` lists the live runs.
+- **Stale cleanup.** A record whose flock is free belongs to a ck-run that crashed or was killed. The next run
+  (or `ck-run active`) deletes it and writes a `stale` ledger event for that run (status `failed`; `ck-run thread`
+  shows it). If the agent CLI outlived its ck-run (the headless child's pid in the record, or a live window's
+  `live.pid` without `live.exit`), its claims stay until that process ends.
+- **Agents are told.** The auto/edit prompt has a `CONCURRENCY:` line: this run's claims, the paths other live runs
+  claimed (never edit them), and "do not undo changes you did not make". Claude also gets `Edit` deny rules for
+  those paths. `cmd.txt` and `--dry-run` show the claims.
+- **After the run.** The disk scan sees every change in the workspace, also other runs'. A change inside another
+  overlapping run's claim, or one only a concurrent writer could have made (a read run never writes; a writer's
+  change outside this run's write area), goes to that run: a note, `rulecheck.json` `changed_by_others`, not this
+  run's `files_changed` and not a violation. A change both runs could have made without claims stays this run's,
+  with a note naming the other run. A file this run's agent reported changing that a concurrent run claimed or
+  also reported changing is a flag (exit 4). `rulecheck.json` `concurrent` lists the overlapping runs. The cursor
+  and agy post-run review gets the same split, a list of the other runs, and drops deletions inside their claims.
+- **Safe shared files.** Run ids end in 4 hex digits; the run folder is created with `mkdir` before anything else,
+  and a clash picks a new id. Ledger lines are one `O_APPEND` write under `flock` (readers take a shared lock).
+  `state.json` (rate limits) is read-modified-written under `state.json.lock` with a per-process temp file.
+- Limits: claims are declared, not guessed; an agent that edits a file it did not claim is caught after the run
+  (flag), not stopped (Claude excepted: deny rules for paths claimed when it started). Two runs without claims
+  may still edit the same file; when both report it, the later run is flagged.
 
 ## Raw folders (read-only), from the workspace rule files
 
@@ -237,9 +278,9 @@ and the status is `partial`.
 
 ## Interaction ledger: `~/PhD_local/agent_runs/ledger.jsonl`
 
-One JSON line per event; every line has the same keys: `event` (dispatch, review, result, refused, busy,
-accept), `run_id`, `parent_run_id`, `from` (CK or agent), `to`, `via`, `title`, `workspace`, `task_type`,
-`agent`, `model`, `mode`, `approved`, `write_scope`, `prompt_path`, `response_path`, `summary_path`,
+One JSON line per event; every line has the same keys: `event` (dispatch, review, result, refused, busy (claim
+conflict), stale (crashed ck-run), accept, ...), `run_id`, `parent_run_id`, `from` (CK or agent), `to`, `via`,
+`title`, `workspace`, `task_type`, `agent`, `model`, `mode`, `approved`, `write_scope`, `claims`, `prompt_path`, `response_path`, `summary_path`,
 `files_read`, `files_changed`, `status`, `accepted`, `ts`, `started_at`, `finished_at`, `duration_s`,
 `exit_code`, `note`. A live run's `dispatch` line has a `live:` note; its `result` line's `prompt_path` is
 the prompt actually used (`prompt-live.md`, or `prompt.md` after a fallback). A review goes from the reviewed agent to the reviewer, via CK. `accepted` is set by
@@ -286,13 +327,13 @@ values for permission flags (`plan`, `acceptEdits`, `accept-edits`, `ask`, `read
 ```
 cd ~/PhD_local/ck-dispatch && python3 -I tests/run_all.py
 ```
-113 tests, about 79 s. Stub CLIs (`tests/fake_cli.py`), a mock `osascript` (`tests/fake_osascript.py`: fails
+134 tests, about 135 s. Stub CLIs (`tests/fake_cli.py`), a mock `osascript` (`tests/fake_osascript.py`: fails
 by default, so every older test also covers the headless fallback; `run` runs `live.sh` detached the way a
 Terminal window would; `silent` never starts it), a temp HOME, fake workspaces and a test config. No network,
 no real agent, no Terminal window. They cover: no forbidden flag for any agent or mode; every refusal case;
 every write-scope rule; env allowlist; rulecheck plants (read-mode write, raw write, symlinked raw repo, new
 `.venv`, rule file, credential read, `git push`, text-only mention, agy mode warning); timeout kill;
-workspace locks; rate-limit fallback; summary cut and fallback; UNVERIFIED tags; ledger fields; review
+no workspace lock (old slot files ignored); rate-limit fallback; summary cut and fallback; UNVERIFIED tags; ledger fields; review
 sends paths not content; blind review; accept; thread view. Live (`tests/test_live.py`): interactive argv
 keeps each agent's permission flags (codex `-a on-request`, `-a never` refused); launcher script (env -i,
 claim); live Claude deny rules; each agent end to end in a mocked window (summary.md → ledger `ok`, session
@@ -313,6 +354,17 @@ writes, git diff deletions in a real repo, risky Cursor transcript and agy SQLit
 count as raw for the review whatever the config says, except `AQS/` in nv (2026-11-03): an nv cursor/agy AQS edit
 in the task folder gets an ok review, while an nv AQS edit outside `--write-scope`, `AQS/.../raw/`, an AQS deletion,
 the nv raw list and devfab `AQS/` are still flagged; claude/codex auto and read runs get no review; `--dry-run` names the review.
+Concurrency (`tests/test_concurrency.py`, 2026-11-03; real ck-run processes started together): two runs of
+different agents in one workspace overlap in time and both finish ok; edit + auto + read in one workspace; other
+workspaces; overlapping claims refused (inside, around, same absolute path; codex never starts, no folder left) and
+allowed again after the claiming run ends; non-overlapping claims run together; runs without claims never blocked;
+other runs' claims in the prompt and Claude deny rules; bad claims refused (read mode, raw folder, rule file,
+other workspace, outside `--write-scope`); `--dry-run` registers nothing; stale cleanup after a SIGKILLed ck-run
+(claim kept while its orphaned agent runs, headless or in a live window, released after; `stale` ledger event;
+thread view) and by `ck-run active`; a read run not blamed for a concurrent writer's change; changes inside another run's claim are that run's;
+the same file reported by two concurrent runs, or edited inside another live run's claim, is flagged; a cursor
+review not blamed for a claimed run's edits and deletions; run-folder reservation; 8 processes appending to the
+ledger; the registry in-process; `state.json` updates from 4 processes.
 
 ## Step 3 live checks (2026-11-02; claude 2.1.316, codex-cli 0.166.0, agent 2026.10.22, agy 1.4.12)
 
@@ -363,6 +415,7 @@ workspace `AGENTS.md`; the git root is `~`). `codex help exec` confirms every fl
 bin/ck-run                  launcher (re-execs with python3 -I)
 ckdispatch/cli.py           commands
 ckdispatch/runner.py        one run: guards, run folder, child, parse, rulecheck, ledger, stdout
+ckdispatch/claims.py        concurrent runs: run registry, --claim conflicts, stale cleanup, change attribution
 ckdispatch/guards.py        forbidden flags, write scopes, env allowlist (code, not config)
 ckdispatch/flags.py         per-agent argv map (headless build, interactive build_live)
 ckdispatch/live.py          --live: iTerm2/Terminal window, profiles, live.sh launcher, wait, stop, session stores

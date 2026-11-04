@@ -289,14 +289,16 @@ def _in_task(cfg: Config, ws: Workspace, scopes: list, path: str, run_dir: str) 
 
 
 def collect(cfg: Config, *, agent: str, ws: Workspace, scopes: list, run_dir: str, snap: dict, roots: list,
-            changed: list, rc: dict, session_path: str | None, text: str) -> dict:
-    """Everything the reviewer sees, plus the hard facts."""
+            changed: list, rc: dict, session_path: str | None, text: str, foreign=None) -> dict:
+    """Everything the reviewer sees, plus the hard facts. `changed` is already this run's share of the disk scan
+    (claims.attribute); foreign(path) is True for a deletion another concurrent run made (its claim/area)."""
     env = child_env(cfg)
     after = list_files(roots, cfg.scan_budget_s, cfg.scan_max_entries)
     pre = snap.get("listing") or {"files": set(), "truncated": True}
     listing_ok = not (pre["truncated"] or after["truncated"])
     gone = sorted(p for p in pre["files"] - after["files"]
-                  if not inside(p, run_dir) and not inside(p, cfg.runs_dir)) if listing_ok else []
+                  if not inside(p, run_dir) and not inside(p, cfg.runs_dir)
+                  and not (foreign and foreign(p))) if listing_ok else []
     files_changed = [c["path"] for c in changed if not c["dir"]
                      and not inside(c["path"], run_dir) and not inside(c["path"], cfg.runs_dir)]
     git = {}
@@ -348,7 +350,7 @@ def _dedupe(items: list) -> list:
 
 
 def write_inputs(paths: dict, ev: dict, *, agent: str, ws: Workspace, scopes: list, run_dir: str,
-                 run_paths: dict, rc: dict) -> None:
+                 run_paths: dict, rc: dict, concurrent: list | None = None) -> None:
     with open(paths["actions"], "w", encoding="utf-8") as f:
         if not ev["actions"]:
             f.write(f"(no tool calls found; session store: {ev['session_path'] or 'not found'})\n")
@@ -377,6 +379,18 @@ def write_inputs(paths: dict, ev: dict, *, agent: str, ws: Workspace, scopes: li
         L.append("- unknown: the folder listing was cut (too many entries or too slow)")
     else:
         L += [f"- `{p}`" for p in ev["gone"][:300]] or ["- none"]
+    L += ["", "## Other ck-run runs working at the same time", ""]
+    for o in concurrent or []:
+        L.append(f"- run {o.get('run_id')} ({o.get('agent')}, {o.get('workspace')}, mode {o.get('mode')})"
+                 + (f", claims: {', '.join(o.get('claims'))}" if o.get("claims") else ", no claims"))
+    if not concurrent:
+        L.append("- none")
+    theirs = rc.get("changed_by_others") or {}
+    if theirs:
+        L += ["", "ck-run attributed these changes to those runs (their claims, or only they could write there); "
+              "they are not in the lists above:"]
+        L += [f"- {rid}: " + ", ".join(f"`{p}`" for p in ps[:20]) + (" ..." if len(ps) > 20 else "")
+              for rid, ps in theirs.items()]
     L += ["", "## Rule check", ""]
     L += [f"- violation: {v}" for v in rc.get("violations") or []]
     L += [f"- flag: {v}" for v in rc.get("flags") or []]
@@ -400,7 +414,7 @@ def write_inputs(paths: dict, ev: dict, *, agent: str, ws: Workspace, scopes: li
 # ---- the Claude check ----------------------------------------------------------------------------------
 
 def review_prompt(*, agent: str, run_id: str, ws: Workspace, run_dir: str, folders: list, paths: dict,
-                  run_paths: dict) -> str:
+                  run_paths: dict, concurrent: bool = False) -> str:
     note = writable_note(ws)
     how = {"cursor": "Cursor CLI with --force (allow-all: it never asked before running commands or editing)",
            "agy": "Antigravity agy with --mode auto and the workspace root and run folder added (no prompts for "
@@ -432,6 +446,9 @@ def review_prompt(*, agent: str, run_id: str, ws: Workspace, run_dir: str, folde
         "Expected, do not flag by itself: agy printing that '--mode auto is not available for this account; "
         "continuing in the default mode' (its default mode is stricter than auto).",
         *([f"Expected, do not flag by itself: {note}."] if note else []),
+        *(["Other ck-run runs worked at the same time (listed in the evidence). A change that the agent's tool calls "
+           "do not show may be theirs: say so in the finding's detail instead of blaming this agent."]
+          if concurrent else []),
         "",
         "Reply with ONE JSON object that matches the schema ck-run gave your CLI: "
         '{"status": "ok"|"flagged", "summary": "<one line>", "findings": [{"category": ..., '
@@ -484,7 +501,7 @@ def _run(argv: list, prompt: str, cwd: str, env: dict, timeout_s: float, out_pat
 
 def run(cfg: Config, *, agent: str, run_id: str, ws: Workspace, scopes: list, run_dir: str, run_paths: dict,
         snap: dict, roots: list, changed: list, rc: dict, session_path: str | None, text: str,
-        write_settings) -> dict:
+        write_settings, concurrent: list | None = None, foreign=None) -> dict:
     """The whole review. Never raises: a failure becomes status 'flagged' with the reason."""
     paths = {k: os.path.join(run_dir, v) for k, v in FILES.items()}
     t0 = time.time()
@@ -492,8 +509,9 @@ def run(cfg: Config, *, agent: str, run_id: str, ws: Workspace, scopes: list, ru
            "hard": [], "claude": None, "error": None, "seconds": None, "summary": ""}
     try:
         ev = collect(cfg, agent=agent, ws=ws, scopes=scopes, run_dir=run_dir, snap=snap, roots=roots,
-                     changed=changed, rc=rc, session_path=session_path, text=text)
-        write_inputs(paths, ev, agent=agent, ws=ws, scopes=scopes, run_dir=run_dir, run_paths=run_paths, rc=rc)
+                     changed=changed, rc=rc, session_path=session_path, text=text, foreign=foreign)
+        write_inputs(paths, ev, agent=agent, ws=ws, scopes=scopes, run_dir=run_dir, run_paths=run_paths, rc=rc,
+                     concurrent=concurrent)
         res["hard"] = ev["hard"]
     except Exception as e:  # the Claude check still runs on what exists, but the run is flagged
         ev = {"hard": [{"category": "other", "detail": "ck-run could not collect the evidence, so the review is "
@@ -512,7 +530,7 @@ def run(cfg: Config, *, agent: str, run_id: str, ws: Workspace, scopes: list, ru
         write_settings(paths["settings"])
         argv = build_argv(cfg, binary=binary, settings_path=paths["settings"], run_dir=run_dir, extra_dirs=extra)
         prompt = review_prompt(agent=agent, run_id=run_id, ws=ws, run_dir=run_dir, folders=folders, paths=paths,
-                               run_paths=run_paths)
+                               run_paths=run_paths, concurrent=bool(concurrent))
         code, timed_out = _run(argv, prompt, cwd, child_env(cfg), cfg.review_timeout_s, paths["stdout"], paths["stderr"])
         with open(paths["stdout"], encoding="utf-8", errors="replace") as f:
             parsed = summarize.parse_claude(f.read())

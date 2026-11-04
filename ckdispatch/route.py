@@ -5,7 +5,9 @@ at commit 0aa87fc (MIT License, Copyright (c) 2026 AgwaB). See LICENSE-THIRD-PAR
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
+import fcntl
 import json
 import os
 import re
@@ -48,10 +50,23 @@ def load_state(runs_dir: str) -> dict:
 
 def save_state(runs_dir: str, st: dict) -> None:
     os.makedirs(runs_dir, mode=0o700, exist_ok=True)
-    tmp = state_path(runs_dir) + ".tmp"
+    tmp = f"{state_path(runs_dir)}.{os.getpid()}.tmp"  # per process: concurrent runs never share a temp file
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(st, f, indent=2)
     os.replace(tmp, state_path(runs_dir))
+
+
+@contextlib.contextmanager
+def _state_lock(runs_dir: str):
+    """Read-modify-write of state.json by concurrent runs: one at a time (milliseconds)."""
+    os.makedirs(runs_dir, mode=0o700, exist_ok=True)
+    fd = os.open(state_path(runs_dir) + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def parse_reset(msg, ref=None):
@@ -86,10 +101,11 @@ def parse_reset(msg, ref=None):
 
 
 def mark_limited(runs_dir: str, agent: str, message: str) -> dict:
-    st = load_state(runs_dir)
     t = parse_reset(message)
-    st.setdefault("rate_limited", {})[agent] = {"until": t.astimezone(UTC).isoformat(), "message": (message or "")[:300]}
-    save_state(runs_dir, st)
+    with _state_lock(runs_dir):
+        st = load_state(runs_dir)
+        st.setdefault("rate_limited", {})[agent] = {"until": t.astimezone(UTC).isoformat(), "message": (message or "")[:300]}
+        save_state(runs_dir, st)
     return st["rate_limited"][agent]
 
 
@@ -99,13 +115,14 @@ def limited(st: dict, agent: str):
 
 
 def clear(runs_dir: str, agent: str | None = None) -> None:
-    st = load_state(runs_dir)
-    rl = st.get("rate_limited", {})
-    if agent:
-        rl.pop(agent, None)
-    else:
-        rl.clear()
-    save_state(runs_dir, st)
+    with _state_lock(runs_dir):
+        st = load_state(runs_dir)
+        rl = st.get("rate_limited", {})
+        if agent:
+            rl.pop(agent, None)
+        else:
+            rl.clear()
+        save_state(runs_dir, st)
 
 
 def suggest(runs_dir: str, task_type: str, review_of: str | None = None) -> dict:

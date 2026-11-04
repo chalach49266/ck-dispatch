@@ -115,7 +115,7 @@ def result(ctrl, run_id, first, extra):
         "report_md": ctrl.get("report", "Full stub report. UNIQUE-RESULT-MARKER-7f3a"),
         "findings": ctrl.get("findings", [{"claim": "stub claim", "evidence": "stub evidence", "severity": "info"}]),
         "files_read": ctrl.get("files_read", first) + extra,
-        "files_changed": [],
+        "files_changed": ctrl.get("files_changed", []),
         "numbers": ctrl.get("numbers", []),
         "proposed_changes": "",
         "open_questions": [],

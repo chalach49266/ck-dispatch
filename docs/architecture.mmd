@@ -1,7 +1,7 @@
 flowchart TD
   U[chalach] -->|chat + approvals| CK[CK = Grok Bot]
   CK -->|machine shell, local-exec daemon| R["ck-run (Mac)<br>~/PhD_local/ck-dispatch"]
-  R --> G{"guards: forbidden flags, mode,<br>write scope vs raw folders,<br>env allowlist, workspace lock"}
+  R --> G{"guards: forbidden flags, mode,<br>write scope vs raw folders,<br>env allowlist, file claims (no workspace lock)"}
   G -->|read: plan / read-only| A1["claude -p<br>codex exec -s read-only<br>agent -p --mode plan --trust<br>agy --mode plan"]
   G -->|edit: --approved + --write-scope| A2["claude acceptEdits (~/PhD_local repo)<br>codex -C scope -s workspace-write (D1)<br>agent --trust, no plan (D4)<br>agy --mode accept-edits (D2)"]
   A1 --> RD["agent_runs/run_id/<br>task, prompt, packet, cmd, logs,<br>result.json, result.md, summary.md"]

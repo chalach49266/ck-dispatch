@@ -2,6 +2,10 @@
 
 One JSON line per event. Every line has the same keys:
   event          dispatch | review | result | refused | busy | accept
+                 | busy                (since 2026-11-03: a --claim overlapped a live run's claim; nothing started.
+                                        There is no workspace lock: runs without overlapping claims always start)
+                 | stale               (a ck-run that crashed or was killed: its run record and claims were
+                                        released by a later run or `ck-run active`; status failed)
                  | live_window_opened  (--live: the window ck-run opened; note = window_id=<id>; terminal; profile;
                                         whether the title is locked; the title)
                  | live_fallback       (--live: the window did not run the agent; note = the reason; the run
@@ -12,6 +16,7 @@ One JSON line per event. Every line has the same keys:
   from, to       "CK" or an agent name (a review goes from the reviewed agent to the reviewer, via CK;
                  the thread view labels it "CK → <reviewer> · review of <agent>'s run")
   title, workspace, task_type, agent, model, mode, approved, write_scope
+  claims         paths the run claimed with --claim (real paths; [] = none)
   prompt_path, response_path, summary_path
   files_read, files_changed
   status         dispatched | ok | partial | failed | timeout | flagged | violation | refused | busy | fallback
@@ -26,7 +31,7 @@ import os
 from datetime import datetime
 
 KEYS = ["event", "run_id", "parent_run_id", "from", "to", "via", "title", "workspace", "task_type", "agent",
-        "model", "mode", "approved", "write_scope", "prompt_path", "response_path", "summary_path",
+        "model", "mode", "approved", "write_scope", "claims", "prompt_path", "response_path", "summary_path",
         "files_read", "files_changed", "status", "accepted", "ts", "started_at", "finished_at",
         "duration_s", "exit_code", "note"]
 LIST_CAP = 200
@@ -43,7 +48,7 @@ def path(runs_dir: str) -> str:
 def append(runs_dir: str, **fields) -> dict:
     ev = {k: fields.get(k) for k in KEYS}
     ev["ts"] = ev["ts"] or now_iso()
-    for k in ("files_read", "files_changed", "write_scope"):
+    for k in ("files_read", "files_changed", "write_scope", "claims"):
         v = ev.get(k)
         if v is None:
             ev[k] = []
@@ -65,6 +70,7 @@ def load(runs_dir: str) -> list:
     out = []
     try:
         with open(path(runs_dir), encoding="utf-8") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_SH)  # appends take LOCK_EX: never read half a line
             for line in f:
                 try:
                     ev = json.loads(line)
@@ -176,6 +182,8 @@ def render_thread(events: list, run_id: str, with_summary: bool = True) -> str:
                  + (f" · model {op.get('model')}" if op.get("model") else ""))
         if op.get("approved"):
             L.append(f"- edit approved: \"{op['approved']}\" · scope: " + ", ".join(f"`{s}`" for s in op.get("write_scope") or []))
+        if op.get("claims"):
+            L.append("- " + _files("claims", op.get("claims")))
         prompt_path = (res or {}).get("prompt_path") or op.get("prompt_path")  # the one used (live or headless)
         if prompt_path:
             L.append(f"- prompt: `{prompt_path}`")
@@ -197,6 +205,8 @@ def render_thread(events: list, run_id: str, with_summary: bool = True) -> str:
                 L.append(f"- live window: {ev.get('note') or ''}")
             elif name == "live_fallback":
                 L.append(f"- **live fallback**: {ev.get('note') or ''}")
+            elif name == "stale":
+                L.append(f"- **stale** at {_hm(ev.get('ts'))}: {ev.get('note') or ''}")
             elif name.endswith("_review"):  # cursor_review / agy_review: the mandatory post-run Claude check
                 L.append(f"- {name.replace('_', ' ')}: **{ev.get('status')}** · `{ev.get('response_path')}` · "
                          f"{(ev.get('note') or '')[:300]}")

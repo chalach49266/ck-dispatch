@@ -65,7 +65,7 @@ ALLOWED_CONFIG_OVERRIDES = {"sandbox_workspace_write.network_access=false"}
 MODEL_FLAGS = {"--model", "-m"}
 
 # ck-run's own options whose value is free text or a path (not checked for bare words).
-CK_FREE_TEXT = {"--title", "--note", "--focus", "--approved", "--prompt-file", "--write-scope", "--lead"}
+CK_FREE_TEXT = {"--title", "--note", "--focus", "--approved", "--prompt-file", "--write-scope", "--claim", "--lead"}
 # Permission flags CK may never pass to ck-run: ck-run sets them itself.
 CK_PERMISSION_FLAGS = {"--permission-mode", "--sandbox", "-s", "--approval-mode", "--approval-policy",
                        "-a", "--ask-for-approval", "-c", "--config", "--settings", "--allowedtools",

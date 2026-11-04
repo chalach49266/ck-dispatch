@@ -6,7 +6,7 @@ import json
 import os
 import sys
 
-from . import VERSION, ledger, route
+from . import VERSION, claims, ledger, route
 from .config import Config
 from .errors import Refused
 from .flags import AGENTS
@@ -40,6 +40,10 @@ def _parser() -> argparse.ArgumentParser:
     r.add_argument("--approved", help="edit only: the user's approval, in their words, with the time")
     r.add_argument("--write-scope", action="append", default=[],
                    help="auto/edit: folder the agent may change (repeatable; auto default = workspace minus raw folders)")
+    r.add_argument("--claim", action="append", default=[], metavar="PATH",
+                   help="auto/edit: a file or folder this run will edit (repeatable; relative to the workspace root). "
+                        "Refused (exit 6, busy) only if it overlaps a path a live run claimed. There is no workspace "
+                        "lock: any number of runs, any agents, may run at once")
     r.add_argument("--read-dir", action="append", default=[], help="read only: extra folder to read (repeatable)")
     r.add_argument("--timeout", type=int, help="seconds")
     r.add_argument("--parent", help="run id this task follows up")
@@ -81,6 +85,9 @@ def _parser() -> argparse.ArgumentParser:
     o.add_argument("--review-of", choices=AGENTS)
     o.set_defaults(func=cmd_route)
 
+    c = sub.add_parser("active", help="list live runs and their claims (JSON); removes stale records of crashed runs")
+    c.set_defaults(func=cmd_active)
+
     m = sub.add_parser("limits", help="show (or clear) saved rate limits")
     m.add_argument("--clear", nargs="?", const="__all__", metavar="AGENT")
     m.set_defaults(func=cmd_limits)
@@ -98,6 +105,7 @@ def cmd_run(cfg: Config, a) -> int:
     task = read_task_file(a.prompt_file)
     spec = Spec(agent=a.agent, ws=ws, title=title, task_text=task, task_source=os.path.abspath(os.path.expanduser(a.prompt_file)),
                 task_type=a.task_type, model=a.model, mode=a.mode, approved=a.approved, scopes_in=a.write_scope,
+                claims_in=a.claim,
                 read_dirs=a.read_dir, timeout_s=a.timeout, parent_run_id=a.parent, kind="dispatch",
                 from_="CK", lead=a.lead, live=_live(cfg, a))
     return execute(cfg, spec, dry_run=a.dry_run)
@@ -153,6 +161,16 @@ def cmd_show(cfg: Config, a) -> int:
 
 def cmd_route(cfg: Config, a) -> int:
     print(json.dumps(route.suggest(cfg.runs_dir, a.task_type, a.review_of), indent=2))
+    return 0
+
+
+def cmd_active(cfg: Config, a) -> int:
+    live, stale = claims.active(cfg.runs_dir, clean=True)
+    claims.log_stale(cfg.runs_dir, stale, by="ck-run active")
+    keys = ("run_id", "agent", "workspace", "mode", "kind", "title", "claims", "write_scope", "pid", "agent_pid",
+            "orphan", "started_at")
+    print(json.dumps({"live": [{k: r.get(k) for k in keys if k in r} for r in live],
+                      "stale_cleaned": [r.get("run_id") for r in stale]}, indent=2))
     return 0
 
 

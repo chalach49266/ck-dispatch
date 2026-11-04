@@ -8,7 +8,6 @@
   "bin_dirs": ["~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"],
   "default_timeout_s": 1200,
   "max_timeout_s": 7200,
-  "max_runs_per_workspace": 2,
   "scan_budget_s": 120,
   "scan_max_entries": 1000000,
   "live": {

@@ -222,32 +222,21 @@ class TestControl(Base):
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
 
-    def _hold(self, slots):
+    def test_no_workspace_lock_old_slot_files_are_ignored(self):
+        # The old SlotLock (<= 2 runs per workspace, an edit/auto run took every slot, else exit 6 busy) is gone
+        # (chalach 2026-11-03). Holding its old lock files no longer blocks anything.
         d = os.path.join(self.sb.runs, ".locks")
         os.makedirs(d, exist_ok=True)
         fds = []
-        for i in slots:
+        for i in (0, 1):
             fd = os.open(os.path.join(d, f"devfab.slot{i}.lock"), os.O_RDWR | os.O_CREAT, 0o600)
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             fds.append(fd)
-        return fds
-
-    def test_two_runs_per_workspace_and_edit_needs_all_slots(self):
-        fds = self._hold([0, 1])
-        try:
-            p = self.sb.run("claude")
-            self.assertEqual(p.returncode, 6, p.stderr)
-            self.assertEqual(self.sb.ledger()[-1]["event"], "busy")
-            self.assertEqual(self.sb.calls(), [])
-        finally:
-            for fd in fds:
-                os.close(fd)
-        fds = self._hold([0])
         try:
             self.assertEqual(self.sb.run("claude").returncode, 0)
             p = self.sb.run("codex", "devfab", "--mode", "edit", "--approved", "user: ok", "--write-scope", "Design Library")
-            self.assertEqual(p.returncode, 6, p.stderr)
-            self.assertEqual(self.sb.run("codex", "nv").returncode, 0)  # other workspace is free
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertNotIn("busy", [e["event"] for e in self.sb.ledger()])
         finally:
             for fd in fds:
                 os.close(fd)

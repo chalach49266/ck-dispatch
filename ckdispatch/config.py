@@ -92,7 +92,7 @@ class Config:
         self.local_protected.append(os.path.realpath(REPO))
         self.default_timeout_s = int(d.get("default_timeout_s", 1200))
         self.max_timeout_s = int(d.get("max_timeout_s", 7200))
-        self.max_runs_per_workspace = int(d.get("max_runs_per_workspace", 2))
+        # max_runs_per_workspace is gone (2026-11-03): no per-workspace run limit; an old key is ignored
         self.scan_budget_s = float(d.get("scan_budget_s", 120))
         self.scan_max_entries = int(d.get("scan_max_entries", 1000000))
         lv = d.get("live") or {}
