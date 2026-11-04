@@ -93,6 +93,27 @@ keep their sandbox (cursor also `--trust`), and run in the task folder (cwd/`--w
 else the workspace).
 `-f`, `--yolo` and agy's `--dangerously-skip-permissions` stay refused, and CK can never pass `--force` itself.
 
+**Auto with no write area: `auto_readonly`** (chalach 2026-11-03 19:34 CT: "Change ck-run so auto mode in WashU runs
+read-only when no writable folder exists"). In a workspace with a `writable_only` list (washu, nv) where none of
+those folders exists (washu before any `<course>/solutions/` or `<course>/prep/` is made), auto mode without
+`--write-scope` no longer exits 2. It starts, read-only:
+- stderr: `ck-run: NOTE (<agent>): auto_readonly: no writable folder. None of the writable folders of WashU HW exists
+  yet (...), so this auto run is read-only ...`; ledger key `auto_readonly: "no writable folder"` on every event of
+  the run (the dispatch and result notes say it too), `rulecheck.json` `auto_readonly` + a note, `packet.json`,
+  `result.json`, `cmd.txt`, `ck-run active`. `mode` stays `auto`.
+- Each agent keeps its own auto mode; only the write area goes: claude `--permission-mode auto` with the read-mode
+  deny rules (the whole workspace; `--live`: only its run folder open); codex `-C <ws> -s read-only` with the same
+  `approval_policy="on-request"` + `approvals_reviewer="auto_review"` (its `--live` writes of `result.md` /
+  `summary.md` go through auto review, no user prompt); cursor `--force` and agy `--mode auto` unchanged, with their
+  mandatory post-run review (task folder: none, so any workspace write is `outside_task_folder`).
+- The prompt says READ-ONLY for this run, do not create the writable folders, no `PROGRESS.md`, put needed changes in
+  `proposed_changes`. The rule check treats the run as a read run: any workspace file change is a violation (exit 5),
+  and so is a writable folder that now exists (`writable folder theory II WashU/solutions/ created during an auto run
+  with no write area`). Concurrent runs never count it as a writer.
+- ck-run creates no folder and never touches course files. `--claim` is refused (nothing to claim); an explicit
+  `--write-scope` that does not exist is still refused. As soon as one writable folder exists, auto runs write there
+  again as before.
+
 **Post-run review** (`ckdispatch/postreview.py`), after every cursor or agy auto run, headless or `--live`:
 1. ck-run writes `<run>/review-input.md`: files changed, files that disappeared (a name listing before and after),
    `git status`/`git diff` of the task folder if it has its own repo (never the home-folder repo), the rule check
@@ -268,7 +289,8 @@ gone (an old key is ignored). The one conflict ck-run still prevents is two live
 - **WashU HW** (`washu`, `~/Downloads/WashU HW`, not in OneDrive; `CLAUDE.md:67-75` "Ownership" and chalach
   2026-11-02): the original course files are read-only. Agents may write only in `<course>/solutions/` and
   `<course>/prep/` of the seven course folders (`writable_only`; add a pair when a course is added). Auto mode
-  without `--write-scope` uses those that exist and is refused if none does; Claude auto gets a deny rule for
+  without `--write-scope` uses those that exist; if none does, it runs read-only (`auto_readonly: no writable
+  folder`, see Auto mode; until 2026-11-03 19:34 CT it was refused with exit 2). Claude auto gets a deny rule for
   every other entry; the rule check flags any change elsewhere. Runs go to the shared ledger in `agent_runs`.
 - Rule files are protected in every workspace (a change to them inside a scope is a violation).
 
@@ -294,7 +316,8 @@ and the status is `partial`.
 
 One JSON line per event; every line has the same keys: `event` (dispatch, review, result, refused, busy (claim
 conflict; `claims` includes auto-claimed `--write-scope` folders), stale (crashed ck-run), accept, ...), `run_id`, `parent_run_id`, `from` (CK or agent), `to`, `via`,
-`title`, `workspace`, `task_type`, `agent`, `model`, `mode`, `approved`, `write_scope`, `claims`, `prompt_path`, `response_path`, `summary_path`,
+`title`, `workspace`, `task_type`, `agent`, `model`, `mode`, `auto_readonly` (null, or `"no writable folder"`: an auto
+run with no write area, see Auto mode), `approved`, `write_scope`, `claims`, `prompt_path`, `response_path`, `summary_path`,
 `files_read`, `files_changed`, `status`, `accepted`, `ts`, `started_at`, `finished_at`, `duration_s`,
 `exit_code`, `note`. A live run's `dispatch` line has a `live:` note; its `result` line's `prompt_path` is
 the prompt actually used (`prompt-live.md`, or `prompt.md` after a fallback). A review goes from the reviewed agent to the reviewer, via CK. `accepted` is set by
@@ -341,7 +364,7 @@ values for permission flags (`plan`, `acceptEdits`, `accept-edits`, `ask`, `read
 ```
 cd ~/PhD_local/ck-dispatch && python3 -I tests/run_all.py
 ```
-143 tests, about 185 s. Stub CLIs (`tests/fake_cli.py`), a mock `osascript` (`tests/fake_osascript.py`: fails
+150 tests, about 185 s. Stub CLIs (`tests/fake_cli.py`), a mock `osascript` (`tests/fake_osascript.py`: fails
 by default, so every older test also covers the headless fallback; `run` runs `live.sh` detached the way a
 Terminal window would; `silent` never starts it), a temp HOME, fake workspaces and a test config. No network,
 no real agent, no Terminal window. They cover: no forbidden flag for any agent or mode; every refusal case;
@@ -386,6 +409,13 @@ shared areas never claimed (devfab wiki folders, nv `NV Project/`, `NV Project/w
 `<course>/solutions/`; two edit runs there both run); auto runs claim only an explicit `--write-scope` (default area,
 also washu/nv default folders: no claims, never blocked, told about others' claims); `--claim` next to auto-claims;
 `--dry-run` and `ck-run active` show them; `shared_area()` and `from_scopes()` per path and mode.
+Auto with no write area (`tests/test_washu.py` `TestWashuAutoReadOnly`, 2026-11-03 19:34 CT): washu with no
+`solutions/` or `prep/`: claude, codex, cursor and agy all start in default auto mode and finish `ok` (NOTE on stderr;
+`auto_readonly` in the ledger events, result, rule check, packet and cmd.txt; read-only prompt; claude whole-workspace
+deny rules; codex `-s read-only` + auto review; cursor/agy review knows there is no task folder); live claude and
+codex; a course-file write and a new `solutions/` folder are violations (and the cursor review flags them); normal
+auto returns once a `prep/` folder exists; `--claim` and a missing `--write-scope` refused; the same for nv with
+`NV Project/` and `AQS/` gone; rule check and attribution units. No test creates a folder in a real workspace.
 
 ## Step 3 live checks (2026-11-02; claude 2.1.316, codex-cli 0.166.0, agent 2026.10.22, agy 1.4.12)
 

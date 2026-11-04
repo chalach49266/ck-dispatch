@@ -102,9 +102,13 @@ def scan_changed(roots: list, marker_ns: int, budget_s: float, max_entries: int)
     return {"changed": changed, "entries": n, "truncated": truncated, "seconds": round(time.time() - t0, 2)}
 
 
-def classify(cfg: Config, ws: Workspace, mode: str, scopes: list, changed: list, run_dir: str) -> dict:
-    """violations: hard rule broken. flags: needs a human look. notes: folder-mtime noise (often OneDrive)."""
+def classify(cfg: Config, ws: Workspace, mode: str, scopes: list, changed: list, run_dir: str,
+             auto_readonly: str | None = None) -> dict:
+    """violations: hard rule broken. flags: needs a human look. notes: folder-mtime noise (often OneDrive).
+    auto_readonly: an auto run with no write area (the caller passes mode "read"): every workspace change is a
+    violation, and so is a writable folder (e.g. a washu <course>/solutions/) that now exists, since none did."""
     violations, flags, notes, in_scope = [], [], [], []
+    ro_why = f"during an auto run with no write area (auto_readonly: {auto_readonly})" if auto_readonly else ""
     for c in changed:
         p = c["path"]
         rp = os.path.realpath(p)
@@ -125,7 +129,10 @@ def classify(cfg: Config, ws: Workspace, mode: str, scopes: list, changed: list,
             scoped = False  # writable-only workspace (nv: NV Project, AQS; washu: <course>/solutions, <course>/prep)
         if c["dir"]:
             # A folder's own mtime moves when entries are added, removed or renamed (also by OneDrive sync).
-            if raw:
+            made = next((e for e in ws.writable_only if p == e.literal or rp == e.real), None) if auto_readonly else None
+            if made:
+                violations.append(f"writable folder {made.rel}/ created {ro_why}: {p}")
+            elif raw:
                 flags.append(f"folder changed in read-only '{raw.rel}' (entry added/removed/renamed, or OneDrive sync): {p}")
             elif mode == "read":
                 notes.append(f"folder mtime changed during a read-only run (entry added/removed, or OneDrive sync): {p}")
@@ -137,7 +144,7 @@ def classify(cfg: Config, ws: Workspace, mode: str, scopes: list, changed: list,
         elif pfile:
             violations.append(f"protected rule file changed: {p}")
         elif mode == "read":
-            violations.append(f"file changed during a read-only run: {p}")
+            violations.append(f"file changed {ro_why}: {p}" if ro_why else f"file changed during a read-only run: {p}")
         elif mode == "auto" and not scoped:
             violations.append(f"file changed outside the auto-mode write area: {p}")
         elif not scoped:

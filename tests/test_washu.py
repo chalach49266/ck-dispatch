@@ -13,11 +13,11 @@ from unittest import mock
 
 from helpers import REAL_CONFIG, Sandbox
 
-from ckdispatch import guards, rulecheck
+from ckdispatch import claims, guards, rulecheck
 from ckdispatch.config import Config, inside, xp
 from ckdispatch.errors import Refused
 from ckdispatch.flags import AUTO_AREAS, EDIT_AREAS
-from ckdispatch.runner import default_auto_scopes, write_claude_settings
+from ckdispatch.runner import auto_readonly_reason, default_auto_scopes, write_claude_settings
 
 COURSES = ["theory II WashU", "quantum II WashU", "stats mech WashU", "quantum hardware WashU",
            "classical mechanics WashU", "quantum information WashU", "AI physics WashU"]
@@ -114,11 +114,17 @@ class WashuUnit(unittest.TestCase):
         self.assertEqual(default_auto_scopes(self.cfg.workspace("devfab")), [])
         self.assertEqual(default_auto_scopes(self.cfg.workspace("nv")),  # chalach 2026-11-03: AQS writable too
                          [os.path.join(self.sb.nv, "NV Project"), os.path.join(self.sb.nv, "AQS")])
+        self.assertIsNone(auto_readonly_reason(self.ws))
         for d in (self.sol, self.prep, self.qsol):
             shutil.rmtree(d)
+        # chalach 2026-11-03 19:34 CT: no writable folder -> the run goes read-only (execute() checks this first);
+        # default_auto_scopes keeps refusing as a backstop, so [] never means "the whole workspace" here
+        self.assertEqual(auto_readonly_reason(self.ws), "no writable folder")
         with self.assertRaises(Refused) as cm:
             default_auto_scopes(self.ws)
         self.assertIn("none of the writable folders of WashU HW exists yet", str(cm.exception))
+        for d in (self.sol, self.prep, self.qsol):
+            self.assertFalse(os.path.exists(d))
 
     def test_rulecheck_course_files_are_read_only(self):
         orig = os.path.join(self.root, "theory II WashU", "PS9_5020", "PS9_5020.tex")
@@ -213,8 +219,10 @@ class TestWashuRuns(unittest.TestCase):
         for d in ("theory II WashU/solutions", "theory II WashU/prep", "quantum II WashU/solutions"):
             shutil.rmtree(os.path.join(self.root, d))
         p = self.sb.run("codex", "washu", "--mode", "auto", "--dry-run", "--no-live")
-        self.assertEqual(p.returncode, 2)
-        self.assertIn("none of the writable folders of WashU HW exists yet", p.stderr)
+        self.assertEqual(p.returncode, 0, p.stderr)  # 2026-11-03 19:34 CT: read-only auto, not exit 2
+        self.assertIn("auto_readonly: no writable folder", p.stderr)
+        self.assertIn(f"-C {q(self.root)} -s read-only", p.stdout)
+        self.assertNotIn("workspace-write", p.stdout)
         self.assertEqual(self.sb.calls(), [])
 
     def test_live_iterm2_launcher_cds_into_the_workspace(self):
@@ -237,6 +245,223 @@ class TestWashuRuns(unittest.TestCase):
                 self.assertEqual(call["cwd"], cwd)
                 res = self.sb.result(self.sb.run_id_from(p))
                 self.assertEqual((res["status"], res["live"]["state"]), ("ok", "done"), res.get("notes"))
+
+
+class TestWashuAutoReadOnly(unittest.TestCase):
+    """chalach 2026-11-03 19:34 CT: "Change ck-run so auto mode in WashU runs read-only when no writable folder
+    exists". With no <course>/solutions/ or prep/, auto mode still starts, in the agent's own auto mode, with no
+    write area; ck-run says so (stderr NOTE, ledger/rulecheck auto_readonly) and creates no folder."""
+
+    WRITABLE = ("theory II WashU/solutions", "theory II WashU/prep", "quantum II WashU/solutions")
+
+    def setUp(self):
+        self.sb = Sandbox()
+        self.root = os.path.realpath(self.sb.washu)
+        for d in self.WRITABLE:
+            shutil.rmtree(os.path.join(self.root, d))
+        self.course_file = os.path.join(self.root, "theory II WashU", "PS9_5020", "PS9_5020.tex")
+        self.sol = os.path.join(self.root, "theory II WashU", "solutions")
+
+    def tearDown(self):
+        self.sb.cleanup()
+
+    @staticmethod
+    def js(path):
+        with open(path) as f:
+            return json.load(f)
+
+    def no_writable_folder(self):
+        cfg = self.js(self.sb.config)
+        for rel in cfg["workspaces"]["washu"]["writable_only"]:
+            self.assertFalse(os.path.exists(os.path.join(self.root, rel)), rel)
+
+    def auto(self, agent, *extra):  # ck-run's default mode (no --mode flag)
+        return self.sb.ck("run", "--agent", agent, "--workspace", "washu", "--title", "List courses",
+                          "--prompt-file", self.sb.task("List the course folders, reply hello, change nothing."),
+                          "--no-live", *extra)
+
+    def test_all_four_agents_start_read_only_and_finish_ok(self):
+        with open(self.course_file) as f:
+            before = f.read()
+        for agent in ("claude", "codex", "cursor", "agy"):
+            with self.subTest(agent=agent):
+                p = self.auto(agent)
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertIn(f"ck-run: NOTE ({agent}): auto_readonly: no writable folder. None of the writable "
+                              "folders of WashU HW exists yet (theory II WashU/solutions/", p.stderr)
+                self.assertNotIn("REFUSED", p.stderr)
+                rid = self.sb.run_id_from(p)
+                rd = os.path.join(self.sb.runs, rid)
+                res = self.sb.result(rid)
+                self.assertEqual((res["status"], res["mode"], res["auto_readonly"]), ("ok", "auto", "no writable folder"))
+                self.assertEqual(res["files_changed"], [])
+                self.assertIn("auto_readonly: no writable folder (auto mode, no write area)", res["notes"])
+                rc = self.js(os.path.join(rd, "rulecheck.json"))
+                self.assertEqual(rc["auto_readonly"], "no writable folder")
+                self.assertTrue(rc["notes"][0].startswith("auto_readonly: no writable folder: none of the writable "
+                                                          "folders of WashU HW existed"), rc["notes"])
+                self.assertEqual(self.js(os.path.join(rd, "packet.json"))["auto_readonly"], "no writable folder")
+                evs = [e for e in self.sb.ledger() if e["run_id"] == rid]
+                self.assertEqual({e["auto_readonly"] for e in evs}, {"no writable folder"})
+                disp = next(e for e in evs if e["event"] == "dispatch")
+                self.assertEqual((disp["mode"], disp["write_scope"], disp["claims"]), ("auto", [], []))
+                self.assertIn("auto_readonly: no writable folder", disp["note"])
+                self.assertIn("auto_readonly: no writable folder", next(e for e in evs if e["event"] == "result")["note"])
+                with open(os.path.join(rd, "cmd.txt")) as f:
+                    self.assertIn("# auto_readonly: no writable folder", f.read())
+                call = self.sb.calls()[0]
+                self.assertEqual(call["cwd"], self.root)
+                self.assertIn("READ-ONLY for this run (auto_readonly: no writable folder)", call["prompt"])
+                self.assertIn("do not create any of those folders", call["prompt"])
+                self.assertIn("READ-ONLY: everything in this workspace (none of its writable folders exists yet",
+                              call["prompt"])
+                self.assertNotIn("Keep PROGRESS.md", call["prompt"])
+                self.assertNotIn("Change files ONLY inside", call["prompt"])
+                a = call["argv"]
+                if agent == "claude":
+                    self.assertIn(["--permission-mode", "auto"], pairs(a))
+                    self.assertNotIn("--add-dir", a)
+                    deny = self.js(os.path.join(rd, "claude-settings.json"))["permissions"]["deny"]
+                    self.assertIn(f"Edit(/{self.root}/**)", deny)  # the whole workspace stays closed
+                elif agent == "codex":
+                    for pr in (["-C", self.root], ["-s", "read-only"], ["-c", 'approval_policy="on-request"'],
+                               ["-c", 'approvals_reviewer="auto_review"']):
+                        self.assertIn(pr, pairs(a))
+                    self.assertNotIn("workspace-write", a)
+                elif agent == "cursor":
+                    self.assertIn("--force", a)
+                    self.assertIn(["--workspace", self.root], pairs(a))
+                else:
+                    self.assertIn(["--mode", "auto"], pairs(a))
+                if agent in ("cursor", "agy"):  # the mandatory post-run review still runs, and knows the run is read-only
+                    rv = next(e for e in evs if e["event"] == f"{agent}_review")
+                    self.assertEqual(rv["status"], "ok", rv["note"])
+                    with open(os.path.join(rd, "review-input.md")) as f:
+                        self.assertIn("none: this auto run had no write area (auto_readonly: no writable folder)", f.read())
+                    review_call = self.sb.calls()[-1]
+                    self.assertIn("none: this auto run had no write area", review_call["prompt"])
+                self.sb.control()
+        self.no_writable_folder()
+        with open(self.course_file) as f:
+            self.assertEqual(f.read(), before)
+
+    def test_live_claude_and_codex_keep_auto_mode_with_no_write_area(self):
+        self.sb.set_live(terminal="iTerm2")
+        self.sb.window("run")
+        for agent in ("claude", "codex"):
+            with self.subTest(agent=agent):
+                p = self.sb.run(agent, "washu", "--mode", "auto", "--live")
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertIn("auto_readonly: no writable folder", p.stderr)
+                rid = self.sb.run_id_from(p)
+                rd = os.path.join(self.sb.runs, rid)
+                res = self.sb.result(rid)
+                self.assertEqual((res["status"], res["live"]["state"], res["auto_readonly"]),
+                                 ("ok", "done", "no writable folder"), res.get("notes"))
+                call = self.sb.calls()[-1]
+                self.assertTrue(call["live"])
+                self.assertIn(f"the only files you write are the two output files result.md and summary.md in {rd}",
+                              call["prompt"])
+                if agent == "codex":
+                    for pr in (["-s", "read-only"], ["-a", "on-request"], ["-c", 'approvals_reviewer="auto_review"']):
+                        self.assertIn(pr, pairs(call["argv"]))
+                    self.assertNotIn("workspace-write", call["argv"])
+                else:
+                    self.assertEqual(call["argv"][-2:], ["auto", call["argv"][-1]])  # --permission-mode auto <prompt>
+                    deny = self.js(os.path.join(rd, "claude-settings-live.json"))["permissions"]["deny"]
+                    self.assertIn(f"Edit(/{self.root}/**)", deny)
+                    self.assertFalse(any(r.startswith(f"Edit(/{rd}/**") for r in deny))  # its outbox stays open
+                self.sb.control()
+        self.no_writable_folder()
+
+    def test_any_change_or_new_writable_folder_is_a_violation(self):
+        self.sb.control(codex={"write": [self.course_file]})
+        p = self.auto("codex")
+        self.assertEqual(p.returncode, 5, p.stderr)
+        v = self.sb.result(self.sb.run_id_from(p))["rulecheck"]["violations"]
+        self.assertIn("file changed during an auto run with no write area (auto_readonly: no writable folder): "
+                      + self.course_file, v)
+        mine = os.path.join(self.sol, "PS9 answer.tex")
+        self.sb.control(cursor={"mkdir": [self.sol], "write": [mine]})
+        p = self.auto("cursor")
+        self.assertEqual(p.returncode, 5, p.stderr)
+        res = self.sb.result(self.sb.run_id_from(p))
+        v = res["rulecheck"]["violations"]
+        self.assertIn("writable folder theory II WashU/solutions/ created during an auto run with no write area "
+                      f"(auto_readonly: no writable folder): {self.sol}", v)
+        self.assertTrue(any(mine in x and "no write area" in x for x in v), v)
+        self.assertEqual(res["files_changed"], [])
+        self.assertEqual(res["post_review"]["status"], "flagged")
+        self.assertTrue(any(f["category"] == "outside_task_folder" and f["evidence"] == mine
+                            for f in res["post_review"]["findings"]), res["post_review"]["findings"])
+
+    def test_normal_auto_returns_once_a_writable_folder_exists(self):
+        p = self.sb.run("codex", "washu", "--mode", "auto", "--dry-run", "--no-live")
+        self.assertIn("auto_readonly", p.stderr)
+        prep = os.path.join(self.root, "quantum II WashU", "prep")
+        os.makedirs(prep)  # chalach (or CK) makes the folder; ck-run never does
+        for agent in ("codex", "claude"):
+            with self.subTest(agent=agent):
+                p = self.auto(agent)
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertNotIn("auto_readonly", p.stderr)
+                rid = self.sb.run_id_from(p)
+                self.assertIsNone(self.sb.result(rid)["auto_readonly"])
+                disp = next(e for e in self.sb.ledger() if e["run_id"] == rid and e["event"] == "dispatch")
+                self.assertEqual((disp["auto_readonly"], disp["write_scope"]), (None, [prep]))
+                call = self.sb.calls()[0]
+                self.assertIn("Change files ONLY inside: " + prep, call["prompt"])
+                if agent == "codex":
+                    self.assertIn(["-C", prep], pairs(call["argv"]))
+                    self.assertIn(["-s", "workspace-write"], pairs(call["argv"]))
+                else:
+                    self.assertIn(["--add-dir", prep], pairs(call["argv"]))
+                self.sb.control()
+        self.assertFalse(os.path.exists(self.sol))
+
+    def test_claim_and_missing_write_scope_are_still_refused(self):
+        p = self.auto("codex", "--claim", "theory II WashU/solutions")
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertIn("REFUSED: --claim: this auto run is read-only (auto_readonly: no writable folder.", p.stderr)
+        p = self.auto("codex", "--write-scope", "theory II WashU/solutions")  # a named folder must exist
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertIn("not an existing folder", p.stderr)
+        self.assertEqual(self.sb.calls(), [])
+        self.no_writable_folder()
+
+    def test_generic_any_workspace_whose_writable_folders_are_all_missing(self):
+        with mock.patch.dict(os.environ, {"HOME": self.sb.home, "CK_DISPATCH_CONFIG": self.sb.config}):
+            cfg = Config()
+        nv = cfg.workspace("nv")  # nv: the same rule once NV Project/ and AQS/ are gone
+        self.assertIsNone(auto_readonly_reason(nv))
+        self.assertIsNone(auto_readonly_reason(cfg.workspace("devfab")))  # no writable list: whole workspace
+        for d in ("NV Project", "AQS"):
+            shutil.rmtree(os.path.join(self.sb.nv, d))
+        self.assertEqual(auto_readonly_reason(nv), "no writable folder")
+        p = self.sb.run("codex", "nv", "--mode", "auto", "--dry-run", "--no-live")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(f"None of the writable folders of {nv.name} exists yet (NV Project/, AQS/)", p.stderr)
+        self.assertIn("-s read-only", p.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.sb.nv, "NV Project")))
+
+    def test_rulecheck_and_attribution_units(self):
+        with mock.patch.dict(os.environ, {"HOME": self.sb.home, "CK_DISPATCH_CONFIG": self.sb.config}):
+            cfg = Config()
+        ws = cfg.workspace("washu")
+        rd = os.path.join(self.sb.runs, "2026-11-03T193400-washu-general-codex-abcd")
+        changed = [{"path": self.sol, "dir": True}, {"path": os.path.join(self.root, "theory II WashU"), "dir": True},
+                   {"path": os.path.join(self.sol, "a.md"), "dir": False}, {"path": os.path.join(rd, "result.md"), "dir": False}]
+        r = rulecheck.classify(cfg, ws, "read", [], changed, rd, auto_readonly="no writable folder")
+        self.assertEqual(len(r["violations"]), 2, r)
+        self.assertTrue(r["violations"][0].startswith("writable folder theory II WashU/solutions/ created"), r)
+        self.assertEqual(len(r["notes"]), 1, r)  # the course folder's own mtime
+        self.assertEqual(r["changed_in_scope"], [])
+        plain = rulecheck.classify(cfg, ws, "read", [], changed, rd)  # a plain read run: unchanged wording
+        self.assertIn(f"file changed during a read-only run: {os.path.join(self.sol, 'a.md')}", plain["violations"])
+        rec = {"run_id": "x", "workspace": "washu", "mode": "auto", "write_scope": []}
+        target = os.path.join(self.sol, "b.md")
+        self.assertTrue(claims._other_may_write(cfg, rec, target))
+        self.assertFalse(claims._other_may_write(cfg, dict(rec, auto_readonly="no writable folder"), target))
 
 
 if __name__ == "__main__":

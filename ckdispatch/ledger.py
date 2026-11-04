@@ -17,6 +17,9 @@ One JSON line per event. Every line has the same keys:
   from, to       "CK" or an agent name (a review goes from the reviewed agent to the reviewer, via CK;
                  the thread view labels it "CK → <reviewer> · review of <agent>'s run")
   title, workspace, task_type, agent, model, mode, approved, write_scope
+  auto_readonly  null, or why an auto run had no write area (since 2026-11-03 19:34 CT: "no writable folder" = a
+                 writable-only workspace, e.g. washu, none of whose writable folders exists; the run still started,
+                 in the agent's auto mode, read-only; ck-run creates no folder)
   claims         paths the run claimed: --claim, plus an edit run's --write-scope folders (real paths; [] = none)
   prompt_path, response_path, summary_path
   files_read, files_changed
@@ -32,7 +35,7 @@ import os
 from datetime import datetime
 
 KEYS = ["event", "run_id", "parent_run_id", "from", "to", "via", "title", "workspace", "task_type", "agent",
-        "model", "mode", "approved", "write_scope", "claims", "prompt_path", "response_path", "summary_path",
+        "model", "mode", "auto_readonly", "approved", "write_scope", "claims", "prompt_path", "response_path", "summary_path",
         "files_read", "files_changed", "status", "accepted", "ts", "started_at", "finished_at",
         "duration_s", "exit_code", "note"]
 LIST_CAP = 200

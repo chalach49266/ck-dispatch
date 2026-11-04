@@ -135,7 +135,10 @@ class TestClaims(Base):
                 self.assertEqual((busy["event"], busy["status"], busy["agent"]), ("busy", "busy", "codex"))
                 self.assertIn(rec["run_id"], busy["note"])
                 self.assertFalse(os.path.exists(os.path.join(self.sb.runs, busy["run_id"])))  # folder released
-        self.assertEqual([c["agent"] for c in self.sb.calls()], ["claude"])  # codex never started
+        # codex never started. The registry record exists before claude's own call record, so wait for that one
+        # (on a loaded machine the stub claude can still be starting here).
+        self.wait_for(lambda: self.sb.calls() or None, what="claude's call record")
+        self.assertEqual([c["agent"] for c in self.sb.calls()], ["claude"])
         self.assertEqual(self.finish(a)[0], 0)
         # once A is done its claim is gone
         p = self.sb.run("codex", "devfab", "--mode", "auto", "--no-live", "--claim", "Design Library/pages/page.md")

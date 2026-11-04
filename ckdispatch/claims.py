@@ -370,6 +370,7 @@ def concurrent(cfg: Config, run_id: str, t_start: float, t_end: float) -> list:
         rec = out.get(rid) or {}
         out[rid] = {"run_id": rid, "agent": op.get("agent"), "workspace": op.get("workspace"),
                     "mode": op.get("mode"), "write_scope": op.get("write_scope") or [],
+                    "auto_readonly": op.get("auto_readonly") or rec.get("auto_readonly"),
                     "claims": op.get("claims") or rec.get("claims") or [], "pid": rec.get("pid"),
                     "started_at": op.get("started_at"), "finished": end_ev.get("event") == "result"}
     return sorted(out.values(), key=lambda r: r.get("started_at") or "")
@@ -377,8 +378,8 @@ def concurrent(cfg: Config, run_id: str, t_start: float, t_end: float) -> list:
 
 def _other_may_write(cfg: Config, rec: dict, path: str) -> bool:
     ws = cfg.workspaces.get(rec.get("workspace") or "")
-    if ws is None or rec.get("mode") not in WRITER_MODES:
-        return False
+    if ws is None or rec.get("mode") not in WRITER_MODES or rec.get("auto_readonly"):
+        return False  # an auto run with no write area (auto_readonly) writes nothing, like a read run
     scopes = [{"path": s, "literal": s} for s in rec.get("write_scope") or []]
     return may_write(cfg, ws, rec["mode"], scopes, path)
 

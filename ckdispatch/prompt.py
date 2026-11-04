@@ -11,7 +11,9 @@ SUMMARY_MAX_CHARS = 200
 
 def header(*, ws: Workspace, run_id: str, agent: str, kind: str, mode: str,
            approved: str | None, scopes: list, live_outbox: str | None = None,
-           claims: list | None = None, other_claims: list | None = None) -> str:
+           claims: list | None = None, other_claims: list | None = None, auto_readonly: str | None = None) -> str:
+    """auto_readonly: an auto run downgraded to read-only (runner.auto_readonly_reason; washu before any
+    <course>/solutions/ or prep/ exists): auto mode, but no write area at all."""
     rules = ", ".join(ws.rule_files)
     first = ", ".join(ws.wiki_first)
     if live_outbox:
@@ -29,6 +31,24 @@ def header(*, ws: Workspace, run_id: str, agent: str, kind: str, mode: str,
     if mode == "read":
         L.append("MODE: read-only. Do not create, change, move or delete any file anywhere"
                  + (f", except the two output files {outputs}." if live_outbox else "."))
+    elif mode == "auto" and auto_readonly:
+        how = {"cursor": "allow-all (--force): your CLI will not ask before acting",
+               "agy": "agy auto mode, with the workspace root and the run folder added: no prompts for reads there"
+               }.get(agent, "your CLI's safety-reviewed auto mode")
+        missing = ", ".join(f"{e.rel}/" for e in ws.writable_only)
+        L.append(f"MODE: auto ({how}), READ-ONLY for this run (auto_readonly: {auto_readonly}): none of the "
+                 f"writable folders of this workspace exists yet ({missing}), so you have no write area. "
+                 "Run autonomously, but do not create, change, move or delete any file or folder in the workspace "
+                 "or anywhere else, and do not create any of those folders"
+                 + (f"; the only files you write are the two output files {outputs}." if live_outbox else ".")
+                 + " Do not write PROGRESS.md (this run is read-only)."
+                 " Make reasonable decisions yourself and mark unknowns (UNKNOWN / UNVERIFIED) instead of inventing."
+                 " Do not stop to wait for answers: list questions that truly need chalach's decision at the end of"
+                 " your output under 'Questions for chalach' (Grok Bot relays them). If the task needs a change,"
+                 " describe it in proposed_changes instead of making it."
+                 + (" After you finish, a read-only Claude Code review checks this run (any write in the workspace,"
+                    " deletions, git push, uploads, credential files, paid cloud jobs are flagged)."
+                    if agent in ("cursor", "agy") else ""))
     elif mode == "auto":
         where = "; ".join(s["path"] for s in scopes) or f"{ws.root} (except the read-only folders below)"
         how = {"cursor": "allow-all (--force): your CLI will not ask before acting",
@@ -48,7 +68,7 @@ def header(*, ws: Workspace, run_id: str, agent: str, kind: str, mode: str,
         L.append(f'MODE: edit, approved by the user ("{approved}"). Change files ONLY inside: {where}. '
                  + (f"Also write the two output files {outputs}. Do not write anywhere else."
                     if live_outbox else "Do not write anywhere else."))
-    if mode in ("auto", "edit"):
+    if mode in ("auto", "edit") and not auto_readonly:
         # chalach 2026-11-03: several agents may work at once, also in this workspace; only claimed paths are reserved
         others = "; ".join(f"{c} (run {r.get('run_id')}, {r.get('agent')})" for c, r in other_claims or [])
         L.append("CONCURRENCY: other agents may be working at the same time, also in this workspace. "
@@ -58,7 +78,10 @@ def header(*, ws: Workspace, run_id: str, agent: str, kind: str, mode: str,
                     else "No other live run has claimed a path right now.")
                  + " Do not undo or overwrite changes you did not make; report files you changed in files_changed.")
     raw = ", ".join(f"{e.rel}/" for e in ws.raw)
-    if ws.writable_only:
+    if ws.writable_only and auto_readonly:
+        L.append("READ-ONLY: everything in this workspace (none of its writable folders exists yet; do not create them)."
+                 + (f" The raw, human-owned sources are: {raw}" if raw else ""))
+    elif ws.writable_only:
         own = ", ".join(f"{e.rel}/" for e in ws.writable_only)
         L.append(f"READ-ONLY: everything in this workspace except {own}."
                  + (f" The raw, human-owned sources are: {raw}" if raw else ""))

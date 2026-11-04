@@ -10,6 +10,11 @@ mode. Writes go to the --write-scope folders if given, else the workspace minus 
   cursor  auto: -p --output-format json --trust --sandbox enabled --force --workspace <scope|ws> <prompt>
   agy     auto: --output-format json --sandbox ... --mode auto --add-dir <workspace root> --add-dir <run> -p <prompt>
 
+Auto with no write area (auto_readonly, chalach 2026-11-03 19:34 CT: a writable-only workspace such as washu where
+none of the writable folders exists yet): the same auto argv, except codex -C <ws> -s read-only (approvals still
+go to auto_review); Claude's settings deny edits in the whole workspace; cursor/agy are held by the prompt, the
+rule check (any workspace change = violation) and their mandatory post-run Claude review.
+
 Cursor and agy auto (2026-11-03, approved by chalach: "do cursor allow everything setting ... otherwise always
 allow"; "allow agy to edit any file"): cursor gets its allow-all flag `--force` ("Force allow commands unless
 explicitly denied", `agent --help`, 2026.10.22) instead of `--auto-review`. agy (chalach, 2026-11-03, later:
@@ -103,7 +108,10 @@ def resolve_binary(cfg: Config, agent: str) -> str:
 
 def build(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, model: str | None,
           run_dir: str, schema_path: str, extra_read_dirs: list, timeout_s: int,
-          claude_settings_path: str, binary: str | None = None) -> Command:
+          claude_settings_path: str, binary: str | None = None, readonly: bool = False) -> Command:
+    """readonly: an auto run with no write area (runner.auto_readonly_reason, chalach 2026-11-03 19:34 CT). Each
+    agent keeps its auto argv; only codex's write area is a flag (-s workspace-write -> -s read-only, approvals
+    still routed to auto_review). Claude: the workspace-wide deny rules come from the settings file (runner)."""
     if agent not in AGENTS:
         raise Refused(f"unknown agent '{agent}'; use one of: {', '.join(AGENTS)}")
     if mode not in MODES:
@@ -138,6 +146,9 @@ def build(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, mo
         a += ["exec", "--json", "-o", os.path.join(run_dir, "last.md"), "--output-schema", schema_path]
         if mode == "read":
             a += ["-C", ws.root, "-s", "read-only"]
+            cwd = ws.root
+        elif mode == "auto" and readonly:  # auto approvals, read-only sandbox: no write area
+            a += ["-C", ws.root, "-s", "read-only"] + CODEX_AUTO_CONFIG
             cwd = ws.root
         elif mode == "auto":
             a += ["-C", root, "-s", "workspace-write"] + CODEX_AUTO_CONFIG
@@ -197,14 +208,14 @@ def build(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, mo
         if model:
             a += ["--model", model]
         a += ["-p", PROMPT]
-    _assert_invariants(agent, mode, a)
+    _assert_invariants(agent, mode, a, readonly=readonly)
     check_child_argv(a, PROMPT, auto=mode == "auto", agent=agent)
     return Command(agent, a, cwd, PROMPT_ON_STDIN[agent], binary)
 
 
 def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, model: str | None,
                run_dir: str, extra_read_dirs: list, claude_settings_path: str, session_id: str | None = None,
-               binary: str | None = None) -> Command:
+               binary: str | None = None, readonly: bool = False) -> Command:
     """argv for --live: the agent's own interactive CLI (TUI), with the prompt as its first message.
 
     Same permission flags as build(); the print/exec/output/schema flags are dropped (interactive mode has
@@ -244,6 +255,9 @@ def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: lis
     elif agent == "codex":
         if mode == "read":
             a += ["-C", ws.root, "-s", "read-only"]  # writes outside the sandbox need the user's approval
+            cwd = ws.root
+        elif mode == "auto" and readonly:  # no write area: result.md/summary.md go through auto_review approvals
+            a += ["-C", ws.root, "-s", "read-only"] + CODEX_AUTO_CONFIG
             cwd = ws.root
         elif mode == "auto":
             a += ["-C", root, "-s", "workspace-write"] + CODEX_AUTO_CONFIG
@@ -296,7 +310,7 @@ def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: lis
             a += ["--model", model]
         a += ["-i"]  # --prompt-interactive: run the prompt, then stay in the session
     a += [PROMPT]
-    _assert_invariants(agent, mode, a, live=True)
+    _assert_invariants(agent, mode, a, live=True, readonly=readonly)
     check_child_argv(a, PROMPT, auto=mode == "auto", agent=agent)
     return Command(agent, a, cwd, False, binary)
 
@@ -318,14 +332,16 @@ def _pair(a: list, flag: str, value: str) -> bool:
     return any(a[i] == flag and a[i + 1] == value for i in range(len(a) - 1))
 
 
-def _assert_invariants(agent: str, mode: str, a: list, live: bool = False) -> None:
+def _assert_invariants(agent: str, mode: str, a: list, live: bool = False, readonly: bool = False) -> None:
     """Defence in depth: refuse if the built argv lacks the expected permission flag."""
     ok = True
     if mode == "auto":
         if agent == "claude":
             ok = _pair(a, "--permission-mode", "auto") and "--settings" in a
         elif agent == "codex":
-            ok = (_pair(a, "-s", "workspace-write") and _pair(a, "-c", 'approvals_reviewer="auto_review"')
+            ok = (_pair(a, "-s", "read-only" if readonly else "workspace-write")
+                  and not (readonly and _pair(a, "-s", "workspace-write"))
+                  and _pair(a, "-c", 'approvals_reviewer="auto_review"')
                   and _pair(a, "-c", 'approval_policy="on-request"'))
         elif agent == "cursor":  # allow-all, but still trusted-workspace + sandbox, never the --yolo alias
             ok = ("--trust" in a and _pair(a, "--sandbox", "enabled") and "--force" in a

@@ -50,7 +50,13 @@ class Spec:
         self.review = kw.get("review")  # dict for reviews
         self.lead = kw.get("lead")
         self.live = bool(kw.get("live"))  # agent in its own interactive CLI, in an iTerm2/Terminal window
+        self.auto_readonly = None  # auto run with no write area (auto_readonly_reason), else None
         self.run_id = ""
+
+    @property
+    def check_mode(self) -> str:
+        """The mode the rule check, claims and attribution use: an auto run downgraded to read-only is a reader."""
+        return "read" if self.auto_readonly else self.mode
 
 
 def new_run_id(ws_key: str, task_type: str, agent: str) -> str:
@@ -100,10 +106,31 @@ def _unreserve(run_dir: str) -> None:
         pass
 
 
+AUTO_READONLY_NO_WRITABLE = "no writable folder"
+
+
+def auto_readonly_reason(ws: Workspace) -> str | None:
+    """chalach 2026-11-03 19:34 CT: auto mode without --write-scope in a writable-only workspace none of whose
+    writable folders exists (washu before any <course>/solutions/ or prep/ is made) still runs, read-only:
+    AUTO_READONLY_NO_WRITABLE. None = normal auto (a writable folder exists, or the workspace has no list)."""
+    if ws.writable_only and not any(os.path.isdir(e.literal) for e in ws.writable_only):
+        return AUTO_READONLY_NO_WRITABLE
+    return None
+
+
+def auto_readonly_note(ws: Workspace) -> str:
+    missing = ", ".join(f"{e.rel}/" for e in ws.writable_only)
+    return (f"auto_readonly: {AUTO_READONLY_NO_WRITABLE}. None of the writable folders of {ws.name} exists yet "
+            f"({missing}), so this auto run is read-only: the agent keeps its own auto mode but has no write area "
+            f"(only its run-folder output files). ck-run creates none of those folders; once one exists, auto runs "
+            f"write there again")
+
+
 def default_auto_scopes(ws: Workspace) -> list:
     """Auto mode without --write-scope. A writable-only workspace: those of its writable folders that exist
     (washu: each course's solutions/ and prep/ that is there). Other workspaces: [] (the whole workspace
-    minus its read-only folders)."""
+    minus its read-only folders). Callers check auto_readonly_reason() first; the refusal below is only a
+    backstop, so [] never silently means "the whole workspace" for a writable-only one."""
     if not ws.writable_only:
         return []
     have = [e.literal for e in ws.writable_only if os.path.isdir(e.literal)]
@@ -311,8 +338,15 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
         elif spec.mode == "auto":
             if spec.kind == "review":
                 raise Refused("reviews are read-only")
-            scopes_in = spec.scopes_in or default_auto_scopes(ws)
-            scopes = validate_write_scopes(cfg, ws, spec.agent, scopes_in, AUTO_AREAS) if scopes_in else []
+            spec.auto_readonly = None if spec.scopes_in else auto_readonly_reason(ws)
+            if spec.auto_readonly:  # chalach 2026-11-03 19:34 CT: launch anyway, with no write area
+                if spec.claims_in:
+                    raise Refused(f"--claim: this auto run is read-only ({auto_readonly_note(ws)}); "
+                                  f"there is nothing to claim")
+                scopes = []
+            else:
+                scopes_in = spec.scopes_in or default_auto_scopes(ws)
+                scopes = validate_write_scopes(cfg, ws, spec.agent, scopes_in, AUTO_AREAS) if scopes_in else []
         elif spec.mode == "read":
             if spec.scopes_in:
                 raise Refused("--write-scope is only for --mode edit")
@@ -326,15 +360,18 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
         spec.auto_claims, spec.auto_skipped = claims.from_scopes(cfg, spec.mode, spec.kind, bool(spec.scopes_in), scopes)
         claim_paths = claims.merge(spec.auto_claims, claim_paths)
         base["claims"] = claim_paths
+        base["auto_readonly"] = spec.auto_readonly
+        ro = bool(spec.auto_readonly)
         cmd = build(cfg, ws, spec.agent, mode=spec.mode, scopes=scopes, model=spec.model, run_dir=run_dir,
                     schema_path=RESULT_SCHEMA, extra_read_dirs=read_dirs, timeout_s=int(spec.timeout_s),
-                    claude_settings_path=paths["settings"])
+                    claude_settings_path=paths["settings"], readonly=ro)
         lv = None
         if spec.live:
             sid = str(uuid.uuid4()) if spec.agent == "claude" else None
             lv = {"session_id": sid, "cmd": build_live(
                 cfg, ws, spec.agent, mode=spec.mode, scopes=scopes, model=spec.model, run_dir=run_dir,
-                extra_read_dirs=read_dirs, claude_settings_path=paths["settings_live"], session_id=sid)}
+                extra_read_dirs=read_dirs, claude_settings_path=paths["settings_live"], session_id=sid,
+                readonly=ro)}
     except Refused as e:
         if reserved:
             _unreserve(run_dir)
@@ -343,6 +380,9 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
                           **{"from": spec.from_, "to": spec.agent})
         print(f"ck-run: REFUSED: {e}", file=sys.stderr)
         return EXIT["refused"]
+    if spec.auto_readonly:
+        print(f"ck-run: NOTE ({spec.agent}): {auto_readonly_note(ws)}.", file=sys.stderr)
+        sys.stderr.flush()
 
     # No workspace lock (chalach 2026-11-03): any number of runs, any agents, same or other workspaces. Only a
     # --claim that overlaps a live run's claim is refused (claims.py). Every run is registered, claims or not.
@@ -354,7 +394,8 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
             got = claims.acquire(cfg.runs_dir, {
                 "run_id": spec.run_id, "agent": spec.agent, "workspace": ws.key, "mode": spec.mode, "kind": spec.kind,
                 "title": spec.title, "task_type": spec.task_type, "claims": claim_paths,
-                "claims_auto": spec.auto_claims, "write_scope": [s["path"] for s in scopes], "run_dir": run_dir})
+                "claims_auto": spec.auto_claims, "write_scope": [s["path"] for s in scopes], "run_dir": run_dir,
+                "auto_readonly": spec.auto_readonly})
         except BaseException:
             _unreserve(run_dir)
             raise
@@ -382,7 +423,8 @@ def _prepare_and_run(cfg, spec, ws, scopes, cmd, lv, run_dir, paths, base, claim
                      dry_run) -> int:
     other_claims = [(c, r) for r in others_live for c in r.get("claims") or []]
     head = P.header(ws=ws, run_id=spec.run_id, agent=spec.agent, kind=spec.kind, mode=spec.mode,
-                    approved=spec.approved, scopes=scopes, claims=claim_paths, other_claims=other_claims)
+                    approved=spec.approved, scopes=scopes, claims=claim_paths, other_claims=other_claims,
+                    auto_readonly=spec.auto_readonly)
     foot = P.footer(run_id=spec.run_id, include_schema=not SCHEMA_ENFORCED_BY_FLAG[spec.agent], schema_path=RESULT_SCHEMA)
     prompt_text = P.assemble(head, spec.title, spec.task_text, foot)
     env = child_env(cfg)
@@ -398,13 +440,19 @@ def _prepare_and_run(cfg, spec, ws, scopes, cmd, lv, run_dir, paths, base, claim
         lv["prompt"] = P.assemble(
             P.header(ws=ws, run_id=spec.run_id, agent=spec.agent, kind=spec.kind, mode=spec.mode,
                      approved=spec.approved, scopes=scopes, live_outbox=run_dir, claims=claim_paths,
-                     other_claims=other_claims),
+                     other_claims=other_claims, auto_readonly=spec.auto_readonly),
             spec.title, spec.task_text,
             P.footer(run_id=spec.run_id, include_schema=True, schema_path=RESULT_SCHEMA, live_outbox=run_dir))
         lines += [f"# live (default; --no-live for headless only): an {cfg.live_terminal} window runs {paths['live_sh']},",
                   f"# which starts the interactive CLI with env -i (same env, TERM from the window) and "
                   f"{paths['prompt_live']} as the first message. The command above is the fallback.",
                   redacted(lv["cmd"], RESULT_SCHEMA, paths["prompt_live"])]
+    if spec.auto_readonly:
+        lines += [f"# auto_readonly: {spec.auto_readonly} (none of the writable folders of {ws.name} exists; ck-run "
+                  f"creates none): auto mode, no write area"
+                  + {"claude": "; Claude settings deny edits in the whole workspace",
+                     "codex": "; codex sandbox -s read-only (approvals still go to auto_review)"}.get(spec.agent, "")
+                  + "; any change in the workspace is a rule-check violation"]
     if postreview.applies(spec.agent, spec.mode, spec.kind):
         lines += [f"# after the run: MANDATORY read-only Claude review ({spec.agent} auto = "
                   f"{'--force, allow-all' if spec.agent == 'cursor' else '--mode auto + workspace/run --add-dir'}; chalach 2026-11-03):",
@@ -522,14 +570,15 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
     _write(paths["task"], spec.task_text)
     _write(paths["prompt"], prompt_text)
     _write(paths["cmd"], cmd_txt)
+    # an auto run downgraded to read-only gets the read/edit deny rules: the whole workspace stays closed
+    auto_ws = ws if spec.mode == "auto" and not spec.auto_readonly else None
     if spec.agent == "claude":
-        write_claude_settings(cfg, paths["settings"], auto_ws=ws if spec.mode == "auto" else None,
-                              other_claims=other_claims)
+        write_claude_settings(cfg, paths["settings"], auto_ws=auto_ws, other_claims=other_claims)
     if lv:
         _write(paths["prompt_live"], lv["prompt"])
         if spec.agent == "claude":
-            write_claude_settings(cfg, paths["settings_live"], live_run_dir=run_dir,
-                                  auto_ws=ws if spec.mode == "auto" else None, other_claims=other_claims)
+            write_claude_settings(cfg, paths["settings_live"], live_run_dir=run_dir, auto_ws=auto_ws,
+                                  other_claims=other_claims)
     packet = {
         "run_id": spec.run_id, "kind": spec.kind, "parent_run_id": spec.parent_run_id, "from": spec.from_,
         "workspace": ws.key, "workspace_root": ws.root, "lead": spec.lead, "task_type": spec.task_type,
@@ -537,6 +586,7 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
         "mode": {"read": "plan", "edit": "edit-approved", "auto": "auto"}[spec.mode],
         "approved_actions": [spec.approved] if spec.mode == "edit" else [],
         "write_scope": [s["path"] for s in scopes], "claims": list(claim_paths),
+        "auto_readonly": spec.auto_readonly,
         "deliverable": "result.md + result.json + summary.md",
         "budget": {"timeout_s": int(spec.timeout_s)}, "review": spec.review, "task_source": spec.task_source,
         "created_at": started, "config_path": cfg.path, "ck_dispatch_version": VERSION}
@@ -547,7 +597,11 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
     ledger.append(cfg.runs_dir, **base, event=spec.kind, status="dispatched",
                   prompt_path=paths["prompt_live"] if lv else paths["prompt"], response_path=paths["result_md"],
                   summary_path=paths["summary"], write_scope=packet["write_scope"], started_at=started,
-                  note=f"live: interactive CLI in an {cfg.live_terminal} window (headless if the window fails)" if lv else None,
+                  note="; ".join(n for n in [
+                      f"auto_readonly: {spec.auto_readonly} (none of the writable folders of {ws.name} exists; "
+                      f"auto mode, no write area)" if spec.auto_readonly else None,
+                      f"live: interactive CLI in an {cfg.live_terminal} window (headless if the window fails)"
+                      if lv else None] if n) or None,
                   **{"from": spec.from_, "to": spec.agent})
 
     reviewed = postreview.applies(spec.agent, spec.mode, spec.kind)
@@ -577,8 +631,8 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
     scan = rulecheck.scan_changed(roots, marker_ns, cfg.scan_budget_s, cfg.scan_max_entries)
     # Other runs may have worked at the same time (no workspace lock): split the scan's changes between them.
     others = claims.concurrent(cfg, spec.run_id, marker_ns / 1e9, time.time())
-    att = claims.attribute(cfg, ws, spec.mode, scopes, list(claim_paths), scan["changed"], others)
-    cls = rulecheck.classify(cfg, ws, spec.mode, scopes, att["mine"], run_dir)
+    att = claims.attribute(cfg, ws, spec.check_mode, scopes, list(claim_paths), scan["changed"], others)
+    cls = rulecheck.classify(cfg, ws, spec.check_mode, scopes, att["mine"], run_dir, auto_readonly=spec.auto_readonly)
     tr = rulecheck.scan_transcript(parsed, stdout, stderr, agent=spec.agent, mode=spec.mode)
     rc = {"violations": cls["violations"] + tr["violations"], "flags": cls["flags"] + tr["flags"],
           "notes": cls["notes"] + tr.get("notes", []) + att["notes"], "changed_in_scope": cls["changed_in_scope"],
@@ -587,8 +641,11 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
           "claims": list(claim_paths),
           "concurrent": [{k: o.get(k) for k in ("run_id", "agent", "workspace", "mode", "claims", "finished")}
                          for o in others],
-          "changed_by_others": att["theirs"]}
-    if spec.mode in claims.WRITER_MODES and others:
+          "changed_by_others": att["theirs"], "auto_readonly": spec.auto_readonly}
+    if spec.auto_readonly:
+        rc["notes"].insert(0, f"auto_readonly: {spec.auto_readonly}: none of the writable folders of {ws.name} existed "
+                              f"when the run started, so it ran in auto mode with no write area")
+    if spec.check_mode in claims.WRITER_MODES and others:
         st = parsed["structured"] if isinstance(parsed["structured"], dict) else {}
         mine_rep = [_norm(f, ws.root) for f in st.get("files_changed") or [] if isinstance(f, str) and f.strip()]
         rc["flags"] += claims.same_file(cfg, mine_rep, others)
@@ -601,10 +658,10 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
                 run_paths={"result_md": paths["result_md"],
                            "stdout": None if is_live else os.path.join(run_dir, "stdout.log")},
                 snap=snap, roots=roots, changed=att["mine"], rc=rc, concurrent=others,
-                foreign=lambda p: claims.owner(cfg, ws, spec.mode, scopes, list(claim_paths), p, others)[0] is not None,
+                foreign=lambda p: claims.owner(cfg, ws, spec.check_mode, scopes, list(claim_paths), p, others)[0] is not None,
                 session_path=postreview.session_for(spec.agent, cfg.home, t0 - 5, spec.run_id, live_info),
                 text="\n".join([parsed.get("final_text") or "", "" if is_live else stdout[-200_000:], stderr[-50_000:]]),
-                write_settings=lambda p: write_claude_settings(cfg, p))
+                write_settings=lambda p: write_claude_settings(cfg, p), readonly=spec.auto_readonly)
         except Exception as e:  # never let the check crash ck-run; an unchecked run is a flagged run
             review = postreview.failed(spec.agent, run_dir, e)
         ledger.append(cfg.runs_dir, **dict(base, via="CK"), event=review["event"], status=review["status"],
@@ -635,7 +692,8 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
         lines, src, sum_note = summarize.summary_lines(structured, parsed["final_text"], paths["result_md"])
     if review and review["status"] == "flagged":  # CK reads summary.md first: the warning goes on top
         lines = [f"FLAGGED by the post-run Claude review: {postreview.headline(review)[:120]} (review.md)"] + lines[:9]
-    notes = [n for n in [sum_note] if n]
+    notes = [n for n in [f"auto_readonly: {spec.auto_readonly} (auto mode, no write area)" if spec.auto_readonly
+                         else None, sum_note] if n]
     if live_info and not is_live:
         notes.append(f"live window not used ({live_info['window_error']}); ran headless")
     if is_live:
@@ -707,7 +765,7 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
     rec = {
         "run_id": spec.run_id, "kind": spec.kind, "parent_run_id": spec.parent_run_id, "title": spec.title,
         "agent": spec.agent, "model": spec.model, "workspace": ws.key, "mode": spec.mode,
-        "status": status, "agent_status": agent_status, "exit_code": exit_code, "timed_out": timed_out,
+        "auto_readonly": spec.auto_readonly, "status": status, "agent_status": agent_status, "exit_code": exit_code, "timed_out": timed_out,
         "summary_lines": lines, "summary_source": src, "notes": notes, "schema_errors": schema_errors[:20],
         "agent_result": structured, "final_text": None if structured else parsed["final_text"][:20000],
         "files_read": files_read, "files_read_observed": observed,

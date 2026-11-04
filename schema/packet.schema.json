@@ -19,6 +19,7 @@
     "approved_actions": {"type": "array", "items": {"type": "string"}},
     "write_scope": {"type": "array", "items": {"type": "string"}},
     "claims": {"type": "array", "items": {"type": "string"}},
+    "auto_readonly": {"type": ["string", "null"]},
     "deliverable": {"type": "string"},
     "budget": {
       "type": "object",

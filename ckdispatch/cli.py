@@ -144,7 +144,7 @@ def cmd_accept(cfg: Config, a) -> int:
     ledger.append(cfg.runs_dir, event="accept", run_id=a.run_id, parent_run_id=op.get("parent_run_id"),
                   title=op.get("title"), workspace=op.get("workspace"), task_type=op.get("task_type"),
                   agent=op.get("agent"), model=op.get("model"), mode=op.get("mode"),
-                  prompt_path=res.get("prompt_path"), response_path=res.get("response_path"),
+                  auto_readonly=op.get("auto_readonly"), prompt_path=res.get("prompt_path"), response_path=res.get("response_path"),
                   summary_path=res.get("summary_path"), status=res.get("status"),
                   accepted=not a.reject, note=a.note, **{"from": a.by, "to": op.get("agent")})
     print(f"{a.run_id}: {'accepted' if not a.reject else 'rejected'} by {a.by}")
@@ -170,8 +170,8 @@ def cmd_route(cfg: Config, a) -> int:
 def cmd_active(cfg: Config, a) -> int:
     live, stale = claims.active(cfg.runs_dir, clean=True)
     claims.log_stale(cfg.runs_dir, stale, by="ck-run active")
-    keys = ("run_id", "agent", "workspace", "mode", "kind", "title", "claims", "claims_auto", "write_scope", "pid",
-            "agent_pid", "orphan", "started_at")
+    keys = ("run_id", "agent", "workspace", "mode", "auto_readonly", "kind", "title", "claims", "claims_auto",
+            "write_scope", "pid", "agent_pid", "orphan", "started_at")
     print(json.dumps({"live": [{k: r.get(k) for k in keys if k in r} for r in live],
                       "stale_cleaned": [r.get("run_id") for r in stale]}, indent=2))
     return 0
