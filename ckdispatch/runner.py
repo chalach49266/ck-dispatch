@@ -41,6 +41,7 @@ class Spec:
         self.approved = kw.get("approved")
         self.scopes_in = list(kw.get("scopes_in") or [])
         self.claims_in = list(kw.get("claims_in") or [])  # --claim: paths this run will edit (claims.py)
+        self.auto_claims, self.auto_skipped = [], []  # --write-scope folders claimed automatically / not (shared)
         self.read_dirs = list(kw.get("read_dirs") or [])
         self.timeout_s = kw.get("timeout_s")
         self.parent_run_id = kw.get("parent_run_id")
@@ -320,6 +321,10 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
             raise Refused(f"forbidden mode '{spec.mode}'")
         read_dirs = _validate_read_dirs(cfg, spec.read_dirs)
         claim_paths = claims.normalize(cfg, ws, spec.mode, spec.kind, scopes, spec.claims_in)
+        # chalach 2026-11-03 19:02 CT: edit runs (and auto runs given --write-scope) claim their write folders
+        # automatically; never a root, default write folder or wiki-entry folder (that would serialize every run)
+        spec.auto_claims, spec.auto_skipped = claims.from_scopes(cfg, spec.mode, spec.kind, bool(spec.scopes_in), scopes)
+        claim_paths = claims.merge(spec.auto_claims, claim_paths)
         base["claims"] = claim_paths
         cmd = build(cfg, ws, spec.agent, mode=spec.mode, scopes=scopes, model=spec.model, run_dir=run_dir,
                     schema_path=RESULT_SCHEMA, extra_read_dirs=read_dirs, timeout_s=int(spec.timeout_s),
@@ -349,20 +354,20 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
             got = claims.acquire(cfg.runs_dir, {
                 "run_id": spec.run_id, "agent": spec.agent, "workspace": ws.key, "mode": spec.mode, "kind": spec.kind,
                 "title": spec.title, "task_type": spec.task_type, "claims": claim_paths,
-                "write_scope": [s["path"] for s in scopes], "run_dir": run_dir})
+                "claims_auto": spec.auto_claims, "write_scope": [s["path"] for s in scopes], "run_dir": run_dir})
         except BaseException:
             _unreserve(run_dir)
             raise
         claims.log_stale(cfg.runs_dir, got["stale"], by=f"run {spec.run_id}")
         if not got["ok"]:
             _unreserve(run_dir)
-            note = "; ".join(f"claim {m} overlaps {t}, claimed by live {claims.describe(r)}"
-                             for m, t, r in got["conflicts"][:5])
+            note = "; ".join(f"claim {m}{' (its --write-scope, claimed automatically)' if m in spec.auto_claims else ''}"
+                             f" overlaps {t}, claimed by live {claims.describe(r)}" for m, t, r in got["conflicts"][:5])
             note = f"file claim conflict: {note}; nothing was started"
             ledger.append(cfg.runs_dir, **base, event="busy", status="busy", note=note[:1000],
                           **{"from": spec.from_, "to": spec.agent})
-            print(f"ck-run: BUSY: {note}. Wait for that run, or claim other paths "
-                  f"(runs without overlapping claims always start).", file=sys.stderr)
+            print(f"ck-run: BUSY: {note}. Wait for that run, or use other paths (another --write-scope folder or "
+                  f"--claim; runs without overlapping claims always start).", file=sys.stderr)
             return EXIT["busy"]
         held, others_live = got["held"], got["others"]
     try:
@@ -407,6 +412,9 @@ def _prepare_and_run(cfg, spec, ws, scopes, cmd, lv, run_dir, paths, base, claim
                   f" -> {run_dir}/review.md, ledger event {postreview.event_name(spec.agent)} ok|flagged"]
     lines.append(f"# claims (no workspace lock; only overlapping claims are refused): "
                  + (", ".join(claim_paths) or "none")
+                 + (f"; claimed automatically (--write-scope): {', '.join(spec.auto_claims)}" if spec.auto_claims else "")
+                 + "".join(f"; not claimed automatically: {p} ({why}; claim a subfolder or file with --claim)"
+                           for p, why in spec.auto_skipped)
                  + (f"; other live runs claim: {', '.join(c for c, _ in other_claims)}" if other_claims else ""))
     cmd_txt = "\n".join(lines + [""])
     if dry_run:

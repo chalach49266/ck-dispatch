@@ -39,11 +39,14 @@ def _parser() -> argparse.ArgumentParser:
                         "edit: accept-edits with --approved")
     r.add_argument("--approved", help="edit only: the user's approval, in their words, with the time")
     r.add_argument("--write-scope", action="append", default=[],
-                   help="auto/edit: folder the agent may change (repeatable; auto default = workspace minus raw folders)")
+                   help="auto/edit: folder the agent may change (repeatable; auto default = workspace minus raw folders). "
+                        "An edit run, or an auto run given --write-scope, claims these folders automatically (see "
+                        "--claim), except a workspace root, a default write folder or a folder holding a wiki entry file")
     r.add_argument("--claim", action="append", default=[], metavar="PATH",
-                   help="auto/edit: a file or folder this run will edit (repeatable; relative to the workspace root). "
-                        "Refused (exit 6, busy) only if it overlaps a path a live run claimed. There is no workspace "
-                        "lock: any number of runs, any agents, may run at once")
+                   help="auto/edit: another file or folder this run will edit (repeatable; relative to the workspace "
+                        "root). Refused (exit 6, busy) only if it, or an automatically claimed --write-scope folder, "
+                        "overlaps a path a live run claimed. There is no workspace lock: any number of runs, any "
+                        "agents, may run at once")
     r.add_argument("--read-dir", action="append", default=[], help="read only: extra folder to read (repeatable)")
     r.add_argument("--timeout", type=int, help="seconds")
     r.add_argument("--parent", help="run id this task follows up")
@@ -167,8 +170,8 @@ def cmd_route(cfg: Config, a) -> int:
 def cmd_active(cfg: Config, a) -> int:
     live, stale = claims.active(cfg.runs_dir, clean=True)
     claims.log_stale(cfg.runs_dir, stale, by="ck-run active")
-    keys = ("run_id", "agent", "workspace", "mode", "kind", "title", "claims", "write_scope", "pid", "agent_pid",
-            "orphan", "started_at")
+    keys = ("run_id", "agent", "workspace", "mode", "kind", "title", "claims", "claims_auto", "write_scope", "pid",
+            "agent_pid", "orphan", "started_at")
     print(json.dumps({"live": [{k: r.get(k) for k in keys if k in r} for r in live],
                       "stale_cleaned": [r.get("run_id") for r in stale]}, indent=2))
     return 0

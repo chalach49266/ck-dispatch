@@ -253,7 +253,7 @@
       <li><b>No credentials:</b> clean env, no keys. Claude is denied <code>~/.ssh</code>, <code>.env</code>, <code>*auth*</code>, <code>*credential*</code>, keychains.</li>
       <li><b>No push, deploy or send;</b> no paid cloud sims; no venv or clone in OneDrive.</li>
       <li><b>After each run:</b> disk + log check. Flagged (4) or violation (5) stops the chain.</li>
-      <li><b>Runs in parallel, no workspace lock</b> (2026-11-03); only an overlapping <code>--claim</code> is refused (busy, 6). A number with no source is tagged UNVERIFIED.</li>
+      <li><b>Runs in parallel, no workspace lock</b> (2026-11-03). Edit runs claim their write folders automatically; <code>--claim</code> adds other files. Busy (6) = claim conflict. A number with no source is tagged UNVERIFIED.</li>
     </ul>
   </div>
   <div class="box done">

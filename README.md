@@ -38,7 +38,7 @@ The status is the exit code. When the status is not `ok`, one line also goes to 
 | 3 | failed / timeout | agent error, no result, or killed at `--timeout` (default 1200 s) |
 | 4 | flagged | needs a human look (see rule check) |
 | 5 | violation | a hard rule was broken (see rule check) |
-| 6 | busy | a `--claim` overlaps a path that a live run claimed (nothing started). No workspace lock: see Concurrent runs |
+| 6 | busy | a claim (`--claim`, or an edit run's `--write-scope` folder, claimed automatically) overlaps a path that a live run claimed (nothing started). No workspace lock: see Concurrent runs |
 
 `--task-type` keys for `route`: wiki_synthesis, python_debug, refactor, fdtd_review, microwave_review,
 slides_web, writing, quick_lookup, multi_file_diff, wiki_lint, general (Framework v2 §4 plus agy lanes).
@@ -114,7 +114,8 @@ else the workspace).
 - Write area: `--write-scope` folders if given (same rules as edit mode, no `--approved` needed), else the workspace
   root minus raw folders and protected rule files. rulecheck flags any change outside it, in a raw folder or a rule file.
 - No workspace lock (chalach 2026-11-03): auto, edit and read runs of any agents run at the same time, also in one
-  workspace; only overlapping `--claim` paths are refused (see Concurrent runs). Reviews stay read-only.
+  workspace; only overlapping claims are refused (see Concurrent runs). An auto run given `--write-scope` claims
+  those folders automatically, like an edit run. Reviews stay read-only.
 - The prompt tells the agent to work on its own, mark unknowns, keep `PROGRESS.md`, and end the summary with
   "Questions for chalach" for Grok Bot to relay.
 - Still refused in every mode: bypassPermissions, `dangerously-*`, `-f`/`--yolo`, `--force` (except cursor auto,
@@ -211,6 +212,18 @@ gone (an old key is ignored). The one conflict ck-run still prevents is two live
   is the same as, inside, or around a path a live run claimed is refused: ledger `busy` with the other run's id,
   agent and pid in the note, exit 6, no agent started, no run folder left. Read runs, reviews and runs without
   claims never block anyone and are never blocked. `--claim` with `--mode read` is refused (exit 2).
+- **Write folders are claimed automatically** (chalach 2026-11-03 19:02 CT: "Yes, have edit runs claim their write
+  folders automatically"). An edit run, and an auto run given an explicit `--write-scope`, claims its `--write-scope`
+  folders, so a second edit run in the same folder (or one inside or around it) gets `busy` before it starts instead
+  of a flag after. `--claim` adds more paths; one inside an auto-claimed folder is covered by it. The point is
+  parallel agents, so ck-run never claims automatically a folder that every run in a workspace may write: a
+  workspace root, a default write folder (`writable_only`: nv `NV Project/` and `AQS/`, each washu
+  `<course>/solutions/` and `<course>/prep/`), a folder that holds a wiki entry file (`wiki_first` /
+  `open_questions`: devfab `Design Library/`, `Design Library/maps/`, `Design Library/questions/`, nv
+  `NV Project/wiki/`, ...), `~/PhD_local`, or a folder around one of these. `cmd.txt` and `--dry-run` list such a
+  scope as "not claimed automatically" with the reason; claim a narrower subfolder or file (`--write-scope` or
+  `--claim`) instead. Auto runs without `--write-scope`, read runs and reviews claim nothing automatically. The run
+  record and `ck-run active` show `claims_auto`.
 - **Run registry.** Every run has `agent_runs/.claims/<run_id>.json` (agent, workspace, mode, claims, write scope,
   pid, agent pid) while ck-run works on it, flock-held by ck-run. Check-and-register runs under
   `.claims/registry.lock`, held for milliseconds. `ck-run active` lists the live runs.
@@ -220,7 +233,7 @@ gone (an old key is ignored). The one conflict ck-run still prevents is two live
   `live.pid` without `live.exit`), its claims stay until that process ends.
 - **Agents are told.** The auto/edit prompt has a `CONCURRENCY:` line: this run's claims, the paths other live runs
   claimed (never edit them), and "do not undo changes you did not make". Claude also gets `Edit` deny rules for
-  those paths. `cmd.txt` and `--dry-run` show the claims.
+  those paths. `cmd.txt` and `--dry-run` show the claims (which came from `--write-scope`, which were not claimed).
 - **After the run.** The disk scan sees every change in the workspace, also other runs'. A change inside another
   overlapping run's claim, or one only a concurrent writer could have made (a read run never writes; a writer's
   change outside this run's write area), goes to that run: a note, `rulecheck.json` `changed_by_others`, not this
@@ -231,9 +244,10 @@ gone (an old key is ignored). The one conflict ck-run still prevents is two live
 - **Safe shared files.** Run ids end in 4 hex digits; the run folder is created with `mkdir` before anything else,
   and a clash picks a new id. Ledger lines are one `O_APPEND` write under `flock` (readers take a shared lock).
   `state.json` (rate limits) is read-modified-written under `state.json.lock` with a per-process temp file.
-- Limits: claims are declared, not guessed; an agent that edits a file it did not claim is caught after the run
-  (flag), not stopped (Claude excepted: deny rules for paths claimed when it started). Two runs without claims
-  may still edit the same file; when both report it, the later run is flagged.
+- Limits: claims are declared (`--claim`) or come from `--write-scope`, not guessed; an agent that edits a file it
+  did not claim is caught after the run (flag), not stopped (Claude excepted: deny rules for paths claimed when it
+  started). Two runs without claims (auto on the default area, or a shared `--write-scope` that is not claimed
+  automatically) may still edit the same file; when both report it, the later run is flagged.
 
 ## Raw folders (read-only), from the workspace rule files
 
@@ -279,7 +293,7 @@ and the status is `partial`.
 ## Interaction ledger: `~/PhD_local/agent_runs/ledger.jsonl`
 
 One JSON line per event; every line has the same keys: `event` (dispatch, review, result, refused, busy (claim
-conflict), stale (crashed ck-run), accept, ...), `run_id`, `parent_run_id`, `from` (CK or agent), `to`, `via`,
+conflict; `claims` includes auto-claimed `--write-scope` folders), stale (crashed ck-run), accept, ...), `run_id`, `parent_run_id`, `from` (CK or agent), `to`, `via`,
 `title`, `workspace`, `task_type`, `agent`, `model`, `mode`, `approved`, `write_scope`, `claims`, `prompt_path`, `response_path`, `summary_path`,
 `files_read`, `files_changed`, `status`, `accepted`, `ts`, `started_at`, `finished_at`, `duration_s`,
 `exit_code`, `note`. A live run's `dispatch` line has a `live:` note; its `result` line's `prompt_path` is
@@ -327,7 +341,7 @@ values for permission flags (`plan`, `acceptEdits`, `accept-edits`, `ask`, `read
 ```
 cd ~/PhD_local/ck-dispatch && python3 -I tests/run_all.py
 ```
-134 tests, about 135 s. Stub CLIs (`tests/fake_cli.py`), a mock `osascript` (`tests/fake_osascript.py`: fails
+143 tests, about 185 s. Stub CLIs (`tests/fake_cli.py`), a mock `osascript` (`tests/fake_osascript.py`: fails
 by default, so every older test also covers the headless fallback; `run` runs `live.sh` detached the way a
 Terminal window would; `silent` never starts it), a temp HOME, fake workspaces and a test config. No network,
 no real agent, no Terminal window. They cover: no forbidden flag for any agent or mode; every refusal case;
@@ -364,7 +378,14 @@ other workspace, outside `--write-scope`); `--dry-run` registers nothing; stale 
 thread view) and by `ck-run active`; a read run not blamed for a concurrent writer's change; changes inside another run's claim are that run's;
 the same file reported by two concurrent runs, or edited inside another live run's claim, is flagged; a cursor
 review not blamed for a claimed run's edits and deletions; run-folder reservation; 8 processes appending to the
-ledger; the registry in-process; `state.json` updates from 4 processes.
+ledger; the registry in-process; `state.json` updates from 4 processes. Automatic claims (`TestAutoClaims`,
+`TestSharedAreaUnit`, 2026-11-03): two edit runs with the same `--write-scope`, the second refused (busy, codex
+never starts, free again after); a scope around or inside, an auto run's explicit scope and a plain `--claim` inside
+an auto-claimed folder all refused; edit runs in different folders (workspace and `~/PhD_local`) overlap in time;
+shared areas never claimed (devfab wiki folders, nv `NV Project/`, `NV Project/wiki/`, `AQS/`, washu
+`<course>/solutions/`; two edit runs there both run); auto runs claim only an explicit `--write-scope` (default area,
+also washu/nv default folders: no claims, never blocked, told about others' claims); `--claim` next to auto-claims;
+`--dry-run` and `ck-run active` show them; `shared_area()` and `from_scopes()` per path and mode.
 
 ## Step 3 live checks (2026-11-02; claude 2.1.316, codex-cli 0.166.0, agent 2026.10.22, agy 1.4.12)
 

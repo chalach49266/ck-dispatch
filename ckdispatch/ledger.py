@@ -2,7 +2,8 @@
 
 One JSON line per event. Every line has the same keys:
   event          dispatch | review | result | refused | busy | accept
-                 | busy                (since 2026-11-03: a --claim overlapped a live run's claim; nothing started.
+                 | busy                (since 2026-11-03: a claim (--claim, or an edit run's --write-scope folder,
+                                        claimed automatically) overlapped a live run's claim; nothing started.
                                         There is no workspace lock: runs without overlapping claims always start)
                  | stale               (a ck-run that crashed or was killed: its run record and claims were
                                         released by a later run or `ck-run active`; status failed)
@@ -16,7 +17,7 @@ One JSON line per event. Every line has the same keys:
   from, to       "CK" or an agent name (a review goes from the reviewed agent to the reviewer, via CK;
                  the thread view labels it "CK → <reviewer> · review of <agent>'s run")
   title, workspace, task_type, agent, model, mode, approved, write_scope
-  claims         paths the run claimed with --claim (real paths; [] = none)
+  claims         paths the run claimed: --claim, plus an edit run's --write-scope folders (real paths; [] = none)
   prompt_path, response_path, summary_path
   files_read, files_changed
   status         dispatched | ok | partial | failed | timeout | flagged | violation | refused | busy | fallback

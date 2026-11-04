@@ -209,6 +209,187 @@ class TestClaims(Base):
         self.assertEqual(self.sb.ledger(), [])
 
 
+class TestAutoClaims(Base):
+    """chalach 2026-11-03 19:02 CT: "Yes, have edit runs claim their write folders automatically". Never a workspace
+    root, a default write folder or a folder holding a wiki entry file: that would serialize every run there."""
+
+    EDIT = ("--mode", "edit", "--approved", "user: ok 2026-11-03")
+
+    def notes(self):
+        return os.path.join(self.sb.devfab, "Projects", "Notes")
+
+    def test_two_edit_runs_with_the_same_write_scope_second_is_refused(self):
+        self.sb.control(cursor={"sleep": 5})
+        a = self.start("cursor", "devfab", *self.EDIT, "--write-scope", "Projects/Notes")
+        rec = self.wait_registered(agent="cursor")[0]
+        self.assertEqual((rec["claims"], rec["claims_auto"]), ([self.notes()], [self.notes()]))
+        p = self.sb.run("codex", "devfab", *self.EDIT, "--write-scope", "Projects/Notes", "--no-live")
+        self.assertEqual(p.returncode, 6, p.stderr)
+        self.assertIn("BUSY: file claim conflict", p.stderr)
+        self.assertIn("(its --write-scope, claimed automatically)", p.stderr)
+        self.assertIn(rec["run_id"], p.stderr)
+        busy = self.sb.ledger()[-1]
+        self.assertEqual((busy["event"], busy["status"], busy["agent"], busy["claims"]),
+                         ("busy", "busy", "codex", [self.notes()]))
+        self.assertFalse(os.path.exists(os.path.join(self.sb.runs, busy["run_id"])))
+        self.assertNotIn("codex", [c["agent"] for c in self.sb.calls()])  # codex never started
+        self.assertEqual(self.finish(a)[0], 0)
+        d = next(e for e in self.sb.ledger() if e["event"] == "dispatch" and e["agent"] == "cursor")
+        self.assertEqual(d["claims"], [self.notes()])
+        # once A is done, the same folder is free again
+        p = self.sb.run("codex", "devfab", *self.EDIT, "--write-scope", "Projects/Notes", "--no-live")
+        self.assertEqual(p.returncode, 0, p.stderr)
+
+    def test_write_scopes_inside_around_or_claimed_paths_are_refused(self):
+        os.makedirs(os.path.join(self.notes(), "sub", "deep"))
+        self.sb.control(cursor={"sleep": 5})
+        a = self.start("cursor", "devfab", *self.EDIT, "--write-scope", "Projects/Notes/sub")
+        rec = self.wait_registered(agent="cursor")[0]
+        for extra in ((*self.EDIT, "--write-scope", "Projects/Notes"),                 # around A's folder
+                      (*self.EDIT, "--write-scope", "Projects/Notes/sub/deep"),        # inside it
+                      ("--mode", "auto", "--write-scope", "Projects/Notes/sub"),       # auto with an explicit scope
+                      ("--mode", "auto", "--claim", "Projects/Notes/sub/new.md")):     # a plain --claim inside it
+            with self.subTest(extra=extra):
+                p = self.sb.run("codex", "devfab", *extra, "--no-live")
+                self.assertEqual(p.returncode, 6, p.stderr)
+                self.assertIn(rec["run_id"], p.stderr)
+        self.assertNotIn("codex", [c["agent"] for c in self.sb.calls()])
+        self.assertEqual(self.finish(a)[0], 0)
+
+    def test_edit_runs_in_different_folders_run_at_once(self):
+        self.sb.control(default={"sleep": 3})
+        a = self.start("cursor", "devfab", *self.EDIT, "--write-scope", "Projects/Notes")
+        b = self.start("codex", "devfab", *self.EDIT, "--write-scope", "Design Library/pages")
+        c = self.start("claude", "devfab", *self.EDIT, "--write-scope", os.path.join(self.sb.local, "myrepo"))
+        codes = [self.finish(p)[0] for p in (a, b, c)]
+        self.assertEqual(codes, [0, 0, 0], [p.stderr for p in (a, b, c)])
+        self.assertNotIn("busy", [e["event"] for e in self.sb.ledger()])
+        res = {e["agent"]: e for e in self.results()}
+        (s1, f1), (s2, f2) = self.window(res["cursor"]), self.window(res["codex"])
+        self.assertLessEqual(max(s1, s2), min(f1, f2), "the two edit runs did not overlap in time")
+        claimed = {e["agent"]: e["claims"] for e in self.sb.ledger() if e["event"] == "dispatch"}
+        self.assertEqual(claimed, {"cursor": [self.notes()],
+                                   "codex": [os.path.join(self.sb.devfab, "Design Library", "pages")],
+                                   "claude": [os.path.join(self.sb.local, "myrepo")]})
+
+    def test_shared_write_areas_are_never_claimed_automatically(self):
+        """Two runs on the same root-level shared area both start: wiki folders, default write folders."""
+        cases = [("devfab", "Design Library", "Design Library/index.md, a wiki entry file"),
+                 ("devfab", "Design Library/questions", "open-questions.md, a wiki entry file"),
+                 ("nv", "NV Project", "a default write folder of NV Compact Magnetometer (NV Project/)"),
+                 ("nv", "NV Project/wiki", "ai_retrieval_guide.md, a wiki entry file"),
+                 ("nv", "AQS", "a default write folder of NV Compact Magnetometer (AQS/)"),
+                 ("washu", "theory II WashU/solutions", "a default write folder of WashU HW (theory II WashU/solutions/)")]
+        for ws, scope, why in cases:
+            with self.subTest(ws=ws, scope=scope):
+                self.sb.control(default={"sleep": 2})
+                ps = [self.start("cursor", ws, *self.EDIT, "--write-scope", scope),
+                      self.start("codex", ws, *self.EDIT, "--write-scope", scope)]
+                outs = [self.finish(p) for p in ps]
+                self.assertEqual([o[0] for o in outs], [0, 0], [o[2] for o in outs])
+                for o in outs:
+                    rd = os.path.dirname(o[1].splitlines()[0])
+                    with open(os.path.join(rd, "cmd.txt")) as f:
+                        cmd = f.read()
+                    self.assertIn("refused): none; not claimed automatically: ", cmd)
+                    self.assertIn(why, cmd)
+                    with open(os.path.join(rd, "packet.json")) as f:
+                        self.assertEqual(json.load(f)["claims"], [])
+        self.assertNotIn("busy", [e["event"] for e in self.sb.ledger()])
+
+    def test_auto_runs_claim_only_an_explicit_write_scope(self):
+        self.sb.control(claude={"sleep": 5})
+        a = self.start("claude", "devfab", "--mode", "auto", "--write-scope", "Projects/Notes")
+        rec = self.wait_registered(agent="claude")[0]
+        self.assertEqual(rec["claims_auto"], [self.notes()])
+        p = self.sb.run("codex", "devfab", "--mode", "auto", "--write-scope", "Projects/Notes", "--no-live")
+        self.assertEqual(p.returncode, 6, p.stderr)
+        # an auto run on its default area claims nothing and is never blocked; it is told about A's claim
+        p = self.sb.run("codex", "devfab", "--mode", "auto", "--no-live")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        rd = os.path.join(self.sb.runs, self.sb.run_id_from(p))
+        with open(os.path.join(rd, "packet.json")) as f:
+            self.assertEqual(json.load(f)["claims"], [])
+        with open(os.path.join(rd, "prompt.md")) as f:
+            self.assertIn(f"Never edit paths that other live runs claimed: {self.notes()} (run {rec['run_id']}, claude)",
+                          f.read())
+        # washu/nv auto runs without --write-scope get their default folders as scopes, but claim none of them
+        for ws in ("washu", "nv"):
+            q = self.sb.run("codex", ws, "--mode", "auto", "--no-live")
+            self.assertEqual(q.returncode, 0, q.stderr)
+            with open(os.path.join(self.sb.runs, self.sb.run_id_from(q), "packet.json")) as f:
+                pk = json.load(f)
+            self.assertTrue(pk["write_scope"])
+            self.assertEqual(pk["claims"], [])
+        self.assertEqual(self.finish(a)[0], 0)
+
+    def test_explicit_claims_still_work_next_to_auto_claims(self):
+        self.sb.control(codex={"sleep": 5})
+        # a --claim inside the auto-claimed folder is covered by it; one in a second scope is kept
+        a = self.start("codex", "devfab", *self.EDIT, "--write-scope", "Projects/Notes", "--write-scope", "Design Library",
+                       "--claim", "Projects/Notes/note.md", "--claim", "Design Library/pages/page.md")
+        rec = self.wait_registered(agent="codex")[0]
+        page = os.path.join(self.sb.devfab, "Design Library", "pages", "page.md")
+        self.assertEqual(rec["claims"], [self.notes(), page])
+        self.assertEqual(rec["claims_auto"], [self.notes()])  # Design Library holds the wiki index: not claimed
+        p = self.sb.run("claude", "devfab", "--mode", "auto", "--no-live", "--claim", "Design Library/pages")
+        self.assertEqual(p.returncode, 6, p.stderr)
+        self.assertNotIn("claimed automatically", p.stderr)  # this clash is the explicit --claim
+        p = self.sb.run("claude", "devfab", "--mode", "auto", "--no-live", "--claim", "Design Library/maps")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.finish(a)[0], 0)
+
+    def test_dry_run_and_active_show_auto_claims(self):
+        p = self.sb.run("codex", "devfab", *self.EDIT, "--write-scope", "Projects/Notes", "--dry-run")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(f"refused): {self.notes()}; claimed automatically (--write-scope): {self.notes()}", p.stdout)
+        self.assertEqual(self.records(), [])
+        self.sb.control(cursor={"sleep": 4})
+        a = self.start("cursor", "devfab", *self.EDIT, "--write-scope", "Projects/Notes")
+        self.wait_registered(agent="cursor")
+        act = json.loads(self.sb.ck("active").stdout)
+        runs = act["live"] if isinstance(act, dict) else act
+        self.assertEqual([r["claims_auto"] for r in runs], [[self.notes()]])
+        self.assertEqual(self.finish(a)[0], 0)
+
+
+class TestSharedAreaUnit(unittest.TestCase):
+    def setUp(self):
+        from ckdispatch.config import Config
+        self.sb = Sandbox()
+        self.cfg = Config(self.sb.config)
+
+    def tearDown(self):
+        self.sb.cleanup()
+
+    def area(self, path):
+        return claims.shared_area(self.cfg, path, os.path.realpath(path))
+
+    def test_shared_area(self):
+        d, nv, w = self.sb.devfab, self.sb.nv, self.sb.washu
+        for p in (d, os.path.dirname(d), os.path.join(d, "Design Library"), os.path.join(d, "Design Library", "maps"),
+                  os.path.join(nv, "NV Project"), os.path.join(nv, "NV Project", "wiki"), os.path.join(nv, "AQS"),
+                  os.path.join(w, "theory II WashU", "solutions"), os.path.join(w, "theory II WashU"),
+                  os.path.join(w, "HW Brain"), self.sb.local):
+            with self.subTest(shared=p):
+                self.assertIsNotNone(self.area(p))
+        for p in (os.path.join(d, "Projects", "Notes"), os.path.join(d, "Design Library", "pages"),
+                  os.path.join(nv, "AQS", "MCG V2"), os.path.join(nv, "NV Project", "wiki", "pages"),
+                  os.path.join(w, "theory II WashU", "solutions", "PS9"), os.path.join(self.sb.local, "myrepo")):
+            with self.subTest(narrow=p):
+                self.assertIsNone(self.area(p))
+
+    def test_from_scopes_by_mode(self):
+        notes = os.path.join(self.sb.devfab, "Projects", "Notes")
+        s = [{"path": notes, "literal": notes}]
+        self.assertEqual(claims.from_scopes(self.cfg, "edit", "dispatch", True, s), ([notes], []))
+        self.assertEqual(claims.from_scopes(self.cfg, "auto", "dispatch", True, s), ([notes], []))
+        self.assertEqual(claims.from_scopes(self.cfg, "auto", "dispatch", False, s), ([], []))  # default area
+        self.assertEqual(claims.from_scopes(self.cfg, "read", "dispatch", True, s), ([], []))
+        self.assertEqual(claims.from_scopes(self.cfg, "edit", "review", True, s), ([], []))
+        self.assertEqual(claims.merge([notes], [os.path.join(notes, "a.md"), "/x"], ["/x"]), [notes, "/x"])
+
+
 class TestStaleClaims(Base):
     def test_crashed_run_claim_is_cleaned_up(self):
         self.sb.control(claude={"sleep": 60})

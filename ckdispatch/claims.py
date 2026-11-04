@@ -6,6 +6,15 @@ There is no workspace lock. The one conflict ck-run prevents is two live runs ed
   a folder, relative to the workspace root or absolute; it need not exist yet). A claim that overlaps a claim of a
   live run (same path, or one inside the other) is refused: ledger event `busy`, exit 6, nothing started. Read runs
   and reviews never claim and never block anyone.
+- Automatic claims (chalach 2026-11-03 19:02 CT: "Yes, have edit runs claim their write folders automatically"): an
+  edit run, and an auto run given an explicit --write-scope, also claims its --write-scope folders, so two edit runs
+  in the same folder are refused before they start. Never claimed automatically, because that would serialize every
+  run in a workspace (the point is parallel agents): a workspace root, a workspace's default write folders
+  (writable_only, e.g. nv `NV Project/` and `AQS/`, each washu `<course>/solutions/`), a folder that holds a wiki
+  entry file (wiki_first / open_questions: index, retrieval guide, open questions; e.g. devfab `Design Library/`,
+  nv `NV Project/wiki/`), which every run reads and updates, ~/PhD_local, or a folder around any of these. Auto runs
+  without --write-scope claim nothing. cmd.txt lists such a scope as not claimed automatically; a narrower
+  subfolder, or --claim, still claims.
 - Every run (claims or not) has a record <runs_dir>/.claims/<run_id>.json while ck-run works on it. ck-run holds an
   flock on that file for the whole run. A record whose flock is free belongs to a ck-run that crashed or was killed:
   the next run (or `ck-run active`) deletes it and logs a `stale` ledger event for that run. If the agent CLI outlived
@@ -71,8 +80,57 @@ def normalize(cfg: Config, ws: Workspace, mode: str, kind: str, scopes: list, ra
             raise Refused(f"--claim {s} is outside this run's write area (raw/read-only folder, rule file, "
                           f"outside --write-scope or outside {ws.name})")
         out.append(os.path.realpath(p))
-    out = list(dict.fromkeys(out))
-    return [p for p in out if not any(q != p and inside(p, q) for q in out)]  # a folder covers its files
+    return merge(out)
+
+
+def merge(*lists) -> list:
+    """Claims from several lists, in order, without duplicates; a folder covers the paths inside it."""
+    out = list(dict.fromkeys(p for lst in lists for p in lst))
+    return [p for p in out if not any(q != p and inside(p, q) for q in out)]
+
+
+# ---- automatic claims: the write folders of an edit run (chalach 2026-11-03 19:02 CT) ----------------------------
+
+def _wiki_files(ws: Workspace) -> list:
+    """A workspace's wiki entry files (wiki_first and open_questions: index, retrieval guide, open questions)."""
+    return list(dict.fromkeys(list(ws.wiki_first) + ([ws.open_questions] if ws.open_questions else [])))
+
+
+def shared_area(cfg: Config, literal: str, real: str) -> str | None:
+    """Why a write folder is never claimed automatically (None = claim it): it is, or holds, something every run in a
+    workspace may write (its root, a default write folder, a wiki entry file), so claiming it would serialize them."""
+    def holds(lit: str, rl: str) -> bool:
+        return inside(lit, literal) or inside(rl, real) or inside(lit, real) or inside(rl, literal)
+
+    for w in cfg.workspaces.values():
+        if holds(w.root, w.real_root):
+            return f"the root of {w.name}"
+        for e in w.writable_only:
+            if holds(e.literal, e.real):
+                return f"a default write folder of {w.name} ({e.rel}/), shared by every run there"
+        for f in _wiki_files(w):
+            if holds(f, os.path.realpath(f)):
+                return (f"it holds {os.path.relpath(f, w.root)}, a wiki entry file every run in {w.name} reads "
+                        f"and updates")
+    if holds(cfg.local_root, cfg.real_local_root):
+        return "~/PhD_local"
+    return None
+
+
+def from_scopes(cfg: Config, mode: str, kind: str, explicit: bool, scopes: list) -> tuple:
+    """(claims, skipped [(path, why)]): the --write-scope folders this run claims automatically. Edit runs, and auto
+    runs given an explicit --write-scope; never reviews, read runs, auto runs on their default area, or a shared
+    area (shared_area())."""
+    if kind == "review" or mode not in WRITER_MODES or (mode == "auto" and not explicit):
+        return [], []
+    got, skipped = [], []
+    for s in scopes:
+        why = shared_area(cfg, s.get("literal") or s["path"], s["path"])
+        if why:
+            skipped.append((s["path"], why))
+        else:
+            got.append(s["path"])
+    return merge(got), skipped
 
 
 # ---- the registry -------------------------------------------------------------------------------------------

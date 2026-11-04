@@ -52,7 +52,8 @@ def header(*, ws: Workspace, run_id: str, agent: str, kind: str, mode: str,
         # chalach 2026-11-03: several agents may work at once, also in this workspace; only claimed paths are reserved
         others = "; ".join(f"{c} (run {r.get('run_id')}, {r.get('agent')})" for c, r in other_claims or [])
         L.append("CONCURRENCY: other agents may be working at the same time, also in this workspace. "
-                 + (f"This run claimed: {', '.join(claims)}. " if claims else "")
+                 + (f"This run claimed: {', '.join(claims)} (other runs cannot claim these while it works). "
+                    if claims else "")
                  + (f"Never edit paths that other live runs claimed: {others}." if others
                     else "No other live run has claimed a path right now.")
                  + " Do not undo or overwrite changes you did not make; report files you changed in files_changed.")
