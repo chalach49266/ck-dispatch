@@ -191,12 +191,13 @@ class TestRuleCheck(Base):
         res = self.sb.result(self.sb.run_id_from(p))
         self.assertTrue(any(v.startswith("credential") for v in res["rulecheck"]["violations"]))
 
-    def test_push_command_in_codex_actions_is_violation(self):
-        self.sb.control(codex={"bash": ["git push origin main"]})
+    def test_send_command_in_codex_actions_is_violation(self):
+        # git push / pip install are allowed by chalach (2026-11-04): tests/test_flagfix.py
+        self.sb.control(codex={"bash": ["scp results.csv host:/srv"]})
         p = self.sb.run("codex")
         self.assertEqual(p.returncode, 5, p.stderr)
 
-    def test_text_only_mention_is_flagged(self):
+    def test_text_only_mention_is_flagged(self):  # cloud_sim; push/install mentions are notes (test_flagfix.py)
         self.sb.control(cursor={"report": "I would run web.run(sim) on Tidy3D next."})
         p = self.sb.run("cursor")
         self.assertEqual(p.returncode, 4, p.stderr)

@@ -126,7 +126,8 @@ those folders exists (washu before any `<course>/solutions/` or `<course>/prep/`
    --settings <run>/claude-settings-review.json --add-dir <run>`, prompt on stdin, cwd = the task folder,
    timeout `post_review.timeout_s` (default 300 s; optional `post_review.model`).
 3. Flagged: writes outside the task folder, raw data folders (`AQS/`, `raw/`, the workspace's raw list), deletions,
-   git push, network uploads, credential files, paid cloud (Tidy3D/Flexcompute) jobs. In nv, `AQS/` is not raw
+   publish/deploy, network uploads, credential files, paid cloud (Tidy3D/Flexcompute) jobs. Not flagged: `git push`
+   and `pip install` (allowed by chalach 2026-11-04; the evidence, prompt and review.md say so). In nv, `AQS/` is not raw
    for the review (chalach 2026-11-03: yes, since nv may write it; see Raw folders): an nv `AQS/` change inside the
    task folder is fine, one outside it is still `outside_task_folder`, and `AQS/.../raw/`, deletions in `AQS/` and
    risky commands are still flagged. `AQS/` from any other workspace is still raw. Hard facts flag the run even
@@ -358,12 +359,24 @@ values for permission flags (`plan`, `acceptEdits`, `accept-edits`, `ask`, `read
   was about 70k entries and 2.3 s per workspace.
 - **violation** (exit 5): any file change in read mode; a change in a raw folder, a protected rule file or
   outside the scope; a new `.git`/`.venv`/`venv`/`node_modules`/`site-packages` in OneDrive; a credential path,
-  cloud sim call, push/send, clone/venv/install or permission bypass in the agent's actions (claude tool
-  calls, codex commands).
-- **flagged** (exit 4): the same patterns found only in output text (cursor and agy give no tool log), a
-  folder change inside a raw folder (could be a delete), or agy printing that `--mode` is not supported in
-  print mode.
-- **notes only**: folder mtime changes elsewhere (often OneDrive sync).
+  cloud sim call, push/send (`gh pr/release/repo/api/gist/issue`, `wrangler deploy`, `curl`, `wget`, `scp`,
+  `rsync`, mail), clone/venv/install (`git clone`, venv/virtualenv, `npm install`, `conda create/install`,
+  `uv venv/sync`) or permission bypass in the agent's actions (claude tool calls, codex commands).
+- **allowed** (chalach 2026-11-04 ~23:00 CT: "you can always allow those git push and pip install"): `git push`
+  and `pip install` (`pip`, `pip3`, `python -m pip`, `uv pip install`) in the agent's actions are a note
+  `allowed by chalach 2026-11-04: <excerpt>`, never a violation or flag; the post-run review lists them as
+  allowed keyword hits, never hard facts, and its prompt says not to flag them. The set is
+  `rulecheck.ALLOWED_ACTIONS`. In the same action, any other pattern (e.g. `git push && curl -T ...`) is still a
+  violation. The disk check is unchanged: a new `.venv`/`site-packages` in OneDrive is still a violation.
+- **flagged** (exit 4): a credential path, cloud sim call or permission bypass found only in output text (cursor,
+  agy and live runs give no tool log; `mentioned in output text (no tool log to confirm)`; after an `ok` cursor/agy
+  review that read the agent's own tool calls they become notes), a folder change inside a raw folder (could be a
+  delete), or agy printing that `--mode` is not supported in print mode. These three text categories
+  (`rulecheck.TEXT_FLAG_CATEGORIES`) stay flags by the Grok Bot stand-in's safety carve-out.
+- **notes only**: folder mtime changes elsewhere (often OneDrive sync); push/send, clone/venv/install (and any other
+  category) found only in output text: `mentioned in output text only (not a command)` (chalach 2026-11-04: "treat
+  a word only mention as note"), e.g. a `git push` proposed under Questions or a `pip install` line in a doc.
+  They are in `rulecheck.json` `notes` and under Rule check in result.md.
 - **Wiki first**: `files_read` must show `index.md` and the retrieval guide (reviews: the result file), else `partial`.
 - **Numbers**: no source, a cited path that does not exist, or `verified: false` → **UNVERIFIED** in result.md.
 
@@ -372,12 +385,12 @@ values for permission flags (`plan`, `acceptEdits`, `accept-edits`, `ask`, `read
 ```
 cd ~/PhD_local/ck-dispatch && python3 -I tests/run_all.py
 ```
-150 tests, about 185 s. Stub CLIs (`tests/fake_cli.py`), a mock `osascript` (`tests/fake_osascript.py`: fails
+177 tests, about 220 s. Stub CLIs (`tests/fake_cli.py`), a mock `osascript` (`tests/fake_osascript.py`: fails
 by default, so every older test also covers the headless fallback; `run` runs `live.sh` detached the way a
 Terminal window would; `silent` never starts it), a temp HOME, fake workspaces and a test config. No network,
 no real agent, no Terminal window. They cover: no forbidden flag for any agent or mode; every refusal case;
 every write-scope rule; env allowlist; rulecheck plants (read-mode write, raw write, symlinked raw repo, new
-`.venv`, rule file, credential read, `git push`, text-only mention, agy mode warning); timeout kill;
+`.venv`, rule file, credential read, `scp`, text-only mention, agy mode warning); timeout kill;
 no workspace lock (old slot files ignored); rate-limit fallback; summary cut and fallback; UNVERIFIED tags; ledger fields; review
 sends paths not content; blind review; accept; thread view. Live (`tests/test_live.py`): interactive argv
 keeps each agent's permission flags (codex `-a on-request`, `-a never` refused); launcher script (env -i,
@@ -425,6 +438,14 @@ deny rules; codex `-s read-only` + auto review; cursor/agy review knows there is
 codex; a course-file write and a new `solutions/` folder are violations (and the cursor review flags them); normal
 auto returns once a `prep/` folder exists; `--claim` and a missing `--write-scope` refused; the same for nv with
 `NV Project/` and `AQS/` gone; rule check and attribution units. No test creates a folder in a real workspace.
+Word-only mentions and allowed commands (`tests/test_flagfix.py`, 2026-11-04): `git push` / `pip install` only in
+output text (headless cursor and live claude) are notes, exit 0, shown in result.md; credential, cloud_sim and
+permission_bypass text mentions are still flags (exit 4); `git push`, `pip install`, `pip3`, `python -m pip`,
+`uv pip install` in claude/codex actions are `allowed by chalach 2026-11-04` notes, exit 0; `git clone`, `curl`,
+`gh pr create`, `wrangler deploy`, `rsync`, `wget`, `npm install`, venv, conda, `uv venv/sync` in actions stay
+violations, also next to an allowed command; a cursor auto run that pushes and pip-installs gets an `ok` review
+with no hard facts and chalach's rule in the evidence, prompt and review.md, while an upload in the same command is
+still a hard fact. The session-decoy tests use an upload instead of `git push`.
 
 ## Step 3 live checks (2026-11-02; claude 2.1.316, codex-cli 0.166.0, agent 2026.10.22, agy 1.4.12)
 

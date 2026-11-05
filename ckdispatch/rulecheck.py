@@ -31,6 +31,22 @@ PATTERNS = [
     ("permission_bypass", re.compile(
         r"auto-approving all tool permissions|bypassPermissions|dangerously-skip-permissions|--yolo\b", re.I)),
 ]
+# Output-text mentions (no tool log) of these categories stay FLAGS (exit 4): safety carve-out by the Grok Bot
+# stand-in when chalach chose (2026-11-04 ~23:00 CT) "treat a word only mention as note". Every other category
+# (push_send, heavy_install, any new one) mentioned only in text is a NOTE.
+TEXT_FLAG_CATEGORIES = {"credential", "cloud_sim", "permission_bypass"}
+TEXT_FLAG = "mentioned in output text (no tool log to confirm)"  # runner.py matches this text
+TEXT_NOTE = "mentioned in output text only (not a command)"
+# chalach 2026-11-04 ~23:00 CT (via the Grok Bot stand-in): "you can always allow those git push and pip install".
+# In an agent ACTION these are a note, never a violation or flag (rule check and post-run review). Edit this list
+# to change the rule; everything else in push_send / heavy_install (gh, wrangler, curl, wget, scp, rsync, mail,
+# git clone, venv, npm, conda, uv venv/sync) is unchanged.
+ALLOWED_ACTIONS = [
+    ("git push", re.compile(r"\bgit\s+push\b", re.I)),
+    ("pip install (pip, pip3, python -m pip, uv pip)",
+     re.compile(r"(?:\bpython(?:3(?:\.\d+)?)?\s+-m\s+|\buv\s+|\b)pip3?\s+install\b", re.I)),
+]
+ALLOWED_NOTE = "allowed by chalach 2026-11-04"
 # agy print mode on chalach's account (2026-11-03): "--mode auto is not available for this account; continuing in
 # the default mode". For an agy auto run that is expected (default mode is stricter than auto): a note, not a flag.
 AGY_AUTO_FALLBACK = re.compile(r"--mode auto is not available for this account", re.I)
@@ -154,16 +170,29 @@ def classify(cfg: Config, ws: Workspace, mode: str, scopes: list, changed: list,
     return {"violations": violations, "flags": flags, "notes": notes, "changed_in_scope": sorted(set(in_scope))}
 
 
+def allowed(text: str, m) -> str | None:
+    """Name of the ALLOWED_ACTIONS entry whose match in text covers match m (e.g. 'git push'), else None."""
+    for name, arx in ALLOWED_ACTIONS:
+        if any(a.start() <= m.start() and m.end() <= a.end() for a in arx.finditer(text)):
+            return name
+    return None
+
+
 def scan_transcript(parsed: dict, stdout: str, stderr: str, agent: str | None = None, mode: str | None = None) -> dict:
-    """Actions (commands, tool inputs) count as attempts -> violation. Free text only -> flag."""
+    """Actions (commands, tool inputs) count as attempts -> violation, except ALLOWED_ACTIONS -> note.
+    Free text only (no tool log) -> note, or flag for TEXT_FLAG_CATEGORIES."""
     violations, flags, notes = [], [], []
     if parsed.get("actions"):
         for a in parsed["actions"]:
             text = f"{a.get('tool')}: {a.get('input')}"
             for cat, rx in PATTERNS:
-                m = rx.search(text)
-                if m:
-                    violations.append(f"{cat} in agent action: {_excerpt(text, m)}")
+                hits = list(rx.finditer(text))
+                bad = next((m for m in hits if not allowed(text, m)), None)
+                ok = next((m for m in hits if allowed(text, m)), None)
+                if bad:
+                    violations.append(f"{cat} in agent action: {_excerpt(text, bad)}")
+                if ok:
+                    notes.append(f"{ALLOWED_NOTE}: {_excerpt(text, ok)}")
     elif stdout:
         seen = set()
         for cat, rx in PATTERNS:
@@ -172,7 +201,10 @@ def scan_transcript(parsed: dict, stdout: str, stderr: str, agent: str | None = 
                 if key in seen:
                     continue
                 seen.add(key)
-                flags.append(f"{cat} mentioned in output text (no tool log to confirm): {_excerpt(stdout, m)}")
+                if cat in TEXT_FLAG_CATEGORIES:
+                    flags.append(f"{cat} {TEXT_FLAG}: {_excerpt(stdout, m)}")
+                else:
+                    notes.append(f"{cat} {TEXT_NOTE}: {_excerpt(stdout, m)}")
                 if len(seen) > 20:
                     break
     for cat, rx in STDERR_PATTERNS:

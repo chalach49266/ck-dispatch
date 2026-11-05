@@ -676,9 +676,10 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
                       note=(f"{review['status']}: {postreview.headline(review) if review['status'] == 'flagged' else review['summary']}")[:1000],
                       **{"from": "claude", "to": "CK"})
         if review["status"] == "ok" and review.get("actions"):
-            # Text-only mentions were flags because Cursor/agy give no tool log on stdout. The review read the
-            # agent's real tool calls from its own (confirmed) session and found nothing: keep them as notes.
-            text_only = [f for f in rc["flags"] if "mentioned in output text (no tool log to confirm)" in f]
+            # Text-only mentions of credential/cloud_sim/permission_bypass were flags because Cursor/agy give no
+            # tool log on stdout (other categories are notes already). The review read the agent's real tool
+            # calls from its own (confirmed) session and found nothing: keep them as notes.
+            text_only = [f for f in rc["flags"] if rulecheck.TEXT_FLAG in f]
             rc["flags"] = [f for f in rc["flags"] if f not in text_only]
             rc["notes"] += [f"checked by the post-run review ({review['actions']} tool calls, ok): {f}" for f in text_only]
         if review["status"] == "flagged":

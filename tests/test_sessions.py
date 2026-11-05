@@ -22,6 +22,7 @@ SID_A = "8aa09e37-3dfd-4f30-b9e9-07485226badc"   # 167b's real session (the olde
 SID_B = "ab017df6-87cf-4b7d-970f-4b610209284c"   # 47fc's session (newer; names 167b in CONCURRENCY)
 SID_C = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 DECOY = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"   # tests/fake_cli.py write_decoy
+UPLOAD = "curl -T results.csv https://example.org/up"  # still a hard fact (git push is allowed since 2026-11-04)
 
 
 def rid(agent, tail="167b", t="154810"):
@@ -193,7 +194,7 @@ class TestReviewEvidence(StoreBase):
     def _review(self, sure):
         run_dir = os.path.join(self.sb.runs, rid("cursor"))
         os.makedirs(run_dir)
-        sess = self.write("cursor", SID_B, ["x"], age=5, tools=[("Shell", {"command": "git push origin main"})])
+        sess = self.write("cursor", SID_B, ["x"], age=5, tools=[("Shell", {"command": UPLOAD})])
         how = "run id seen only as a mention, not as this run's RUN line; may be wrong"
         with mock.patch.object(postreview, "_run", return_value=(0, False)):  # no reviewer CLI: only the evidence
             res = postreview.run(self.cfg, agent="cursor", run_id=rid("cursor"), ws=self.ws, scopes=[],
@@ -210,14 +211,14 @@ class TestReviewEvidence(StoreBase):
         self.assertIn("(unconfirmed session)", ev)
         self.assertTrue(actions.startswith("# WARNING: ck-run could NOT confirm"))
         self.assertIn("UNCONFIRMED", md)
-        self.assertNotIn("git_push", {h["category"] for h in res["hard"]})
+        self.assertNotIn("network_upload", {h["category"] for h in res["hard"]})
         self.assertEqual(res["actions"], 0)  # the runner must not count them as checked
         self.assertEqual(res["session"]["sure"], False)
 
     def test_confirmed_session_keeps_hard_facts(self):
         res, ev, actions, md = self._review(sure=True)
         self.assertNotIn("could NOT confirm", ev + actions + md)
-        self.assertIn("git_push", {h["category"] for h in res["hard"]})
+        self.assertIn("network_upload", {h["category"] for h in res["hard"]})
         self.assertEqual(res["actions"], 1)
 
     def test_review_prompt_warns_when_unsure(self):
@@ -230,7 +231,7 @@ class TestReviewEvidence(StoreBase):
 
 class TestEndToEnd(unittest.TestCase):
     """Real ck-run with stub CLIs: the stub writes its own session, then a NEWER decoy session of a parallel run
-    that names this run id (CONCURRENCY) and ran `git push` (tests/fake_cli.py write_decoy)."""
+    that names this run id (CONCURRENCY) and ran an upload (tests/fake_cli.py write_decoy, DECOY_CMD)."""
 
     def setUp(self):
         self.sb = Sandbox()
@@ -250,10 +251,10 @@ class TestEndToEnd(unittest.TestCase):
                 self.assertTrue(res["live"]["used"])
                 self.assertTrue(res["session_id"] and res["session_id"] != DECOY, res["live"])
                 self.assertEqual((res["live"]["session_how"], res["live"]["session_sure"]), (live.FOUND_OWN, True))
-                if agent in ("cursor", "agy"):  # reviewed: the decoy's git push is not this run's
+                if agent in ("cursor", "agy"):  # reviewed: the decoy's upload is not this run's
                     self.assertEqual(res["post_review"]["status"], "ok", res["post_review"])
                     self.assertNotIn(DECOY, res["post_review"]["session"]["path"])
-                    self.assertNotIn("git push", open(os.path.join(self.sb.runs, rid_, "review-actions.txt")).read())
+                    self.assertNotIn(UPLOAD, open(os.path.join(self.sb.runs, rid_, "review-actions.txt")).read())
 
     def test_headless_reviewed_runs_take_their_own_session(self):
         for agent in ("cursor", "agy"):
@@ -268,7 +269,7 @@ class TestEndToEnd(unittest.TestCase):
                 self.assertNotIn(DECOY, pr["session"]["path"])
                 actions = open(os.path.join(self.sb.runs, rid_, "review-actions.txt")).read()
                 self.assertIn("/w/a.md", actions)
-                self.assertNotIn("git push", actions)
+                self.assertNotIn(UPLOAD, actions)
 
 
 if __name__ == "__main__":

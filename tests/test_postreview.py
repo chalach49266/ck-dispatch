@@ -158,13 +158,13 @@ class TestReview(ReviewBase):
         self.assertEqual(evs[2]["status"], "ok")
 
     def test_flagged_by_claude_is_loud_and_flags_the_run(self):
-        self.sb.control(claude={"review": {"status": "flagged", "summary": "pushed to GitHub", "findings": [
-            {"category": "git_push", "severity": "important", "detail": "the agent ran git push",
-             "evidence": "Shell: git push origin main"}]}})
+        self.sb.control(claude={"review": {"status": "flagged", "summary": "deployed the site", "findings": [
+            {"category": "git_push", "severity": "important", "detail": "the agent ran wrangler deploy",
+             "evidence": "Shell: wrangler deploy"}]}})
         p = self.auto("cursor")
         self.assertEqual(p.returncode, 4, p.stderr)
         self.assertIn("CURSOR AUTO RUN FLAGGED BY THE POST-RUN CLAUDE REVIEW", p.stderr)
-        self.assertIn("git push origin main", p.stderr)
+        self.assertIn("Shell: wrangler deploy", p.stderr)
         out = p.stdout.splitlines()
         self.assertTrue(out[1].startswith("FLAGGED by the post-run Claude review: [git_push]"), out)
         self.assertLessEqual(len(out), 11)
@@ -175,7 +175,7 @@ class TestReview(ReviewBase):
         self.assertEqual(evs[-1]["status"], "flagged")
         md = open(os.path.join(self.sb.runs, rid, "review.md")).read()
         self.assertIn("Status: FLAGGED", md)
-        self.assertIn("the agent ran git push", md)
+        self.assertIn("the agent ran wrangler deploy", md)
 
     def test_review_that_does_not_finish_is_flagged(self):
         self.sb.control(claude={"review": {"output": "none", "exit": 1}})
@@ -237,8 +237,10 @@ class TestReview(ReviewBase):
         self.assertIn("Shell: ", actions)
         self.assertNotIn("HARD RULES", actions)  # the prompt (user role) is not an agent action
         hard = {f["category"] for f in self.sb.result(rid)["post_review"]["findings"] if f["source"] == "ck-run"}
-        self.assertEqual(hard, {"git_push", "network_upload", "paid_cloud", "credential_file"})
-        self.assertIn("Keyword hits", open(os.path.join(rd, "review-input.md")).read())
+        self.assertEqual(hard, {"network_upload", "paid_cloud", "credential_file"})  # git push: allowed 2026-11-04
+        ev = open(os.path.join(rd, "review-input.md")).read()
+        self.assertIn("Keyword hits", ev)
+        self.assertIn("[git_push] action (Shell) (allowed by chalach 2026-11-04, not a finding)", ev)
 
     def test_agy_tool_calls_from_its_sqlite_store(self):
         self.sb.control(agy={"tool_calls": [
@@ -421,7 +423,8 @@ class TestReviewUnits(unittest.TestCase):
                 ("Read", '{"path": "/h/.aws/credentials"}')]
         hits = postreview.keyword_hits(acts, "I did not run git push.")
         hard = sorted((h["category"], h["tool"]) for h in hits if h["hard"])
-        self.assertEqual(hard, [("credential_file", "Read"), ("git_push", "Shell")])
+        self.assertEqual(hard, [("credential_file", "Read")])  # git push: allowed by chalach 2026-11-04
+        self.assertTrue(any(h["category"] == "git_push" and h["tool"] == "Shell" and h["allowed"] for h in hits))
         self.assertTrue(any(h["source"] == "text" and not h["hard"] for h in hits))
 
     def test_agy_extractor_reads_real_shape(self):

@@ -47,7 +47,7 @@ def header(*, ws: Workspace, run_id: str, agent: str, kind: str, mode: str,
                  " your output under 'Questions for chalach' (Grok Bot relays them). If the task needs a change,"
                  " describe it in proposed_changes instead of making it."
                  + (" After you finish, a read-only Claude Code review checks this run (any write in the workspace,"
-                    " deletions, git push, uploads, credential files, paid cloud jobs are flagged)."
+                    " deletions, deploys, uploads, credential files, paid cloud jobs are flagged)."
                     if agent in ("cursor", "agy") else ""))
     elif mode == "auto":
         where = "; ".join(s["path"] for s in scopes) or f"{ws.root} (except the read-only folders below)"
@@ -61,7 +61,7 @@ def header(*, ws: Workspace, run_id: str, agent: str, kind: str, mode: str,
                  " your output under 'Questions for chalach' (Grok Bot relays them). Keep PROGRESS.md in your"
                  " working folder (done / remaining) so another agent can resume if usage limits hit."
                  + (" After you finish, a read-only Claude Code review checks this run (writes outside that folder,"
-                    " raw folders, deletions, git push, uploads, credential files, paid cloud jobs are flagged)."
+                    " raw folders, deletions, deploys, uploads, credential files, paid cloud jobs are flagged)."
                     if agent in ("cursor", "agy") else ""))
     else:
         where = "; ".join(s["path"] for s in scopes)

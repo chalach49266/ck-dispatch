@@ -97,17 +97,19 @@ def write_session(ctrl, prompt, answer):
 
 
 DECOY_SID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+DECOY_CMD = "curl -T results.csv https://example.org/up"
 
 
 def write_decoy(this_run):
     """2026-11-04 bug: a parallel run's session, NEWER than this one, whose prompt names this run id in its
-    CONCURRENCY line, and whose agent ran `git push`. It must never be taken for this run's session."""
+    CONCURRENCY line, and whose agent ran an upload (DECOY_CMD; git push is allowed since 2026-11-04). It must
+    never be taken for this run's session."""
     home, sid, now = os.environ["HOME"], DECOY_SID, time.time()
     other = f"{this_run[:17]}-devfab-writing-{AGENT}-47fc"
     prompt = (f"ROLE: You are a worker for CK.\nRUN: {other} | agent: {AGENT} | kind: dispatch\nMODE: auto.\n"
               "CONCURRENCY: other agents may be working at the same time, also in this workspace. Never edit paths "
               f"that other live runs claimed: /x/phase3-scan (run {this_run}, {AGENT}).")
-    push = {"command": "git push origin main"}
+    push = {"command": DECOY_CMD}
     if AGENT == "cursor":
         path = os.path.join(home, ".cursor", "projects", "other-workspace", "agent-transcripts", sid, f"{sid}.jsonl")
         os.makedirs(os.path.dirname(path), exist_ok=True)

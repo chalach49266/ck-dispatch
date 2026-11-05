@@ -294,5 +294,7 @@ def render_result_md(rec: dict) -> str:
           f"- clean: {rc.get('clean')}",
           *(f"- VIOLATION: {v}" for v in rc.get("violations", [])),
           *(f"- flag: {v}" for v in rc.get("flags", [])),
+          *(f"- note: {v}" for v in (rc.get("notes") or [])[:30]),
+          *([f"- ... +{len(rc['notes']) - 30} more notes in rulecheck.json"] if len(rc.get("notes") or []) > 30 else []),
           ""]
     return "\n".join(L)

@@ -11,13 +11,15 @@ the run folder as --add-dir, so neither stops to ask before acting there. After 
        conversation store (SQLite; the tool name and JSON arguments of each step). The session is the one whose
        first RUN line is this run's (live.find_session). If ck-run found it only by a weaker match (it just
        mentions the run id), the evidence and the prompt say so, and its tool calls give hints, not hard facts.
-     - rulecheck violations/flags and keyword hits (deletion, git push, upload, credential file, Tidy3D/Flexcompute)
+     - rulecheck violations/flags and keyword hits (deletion, git push, upload, credential file, Tidy3D/Flexcompute);
+       git push and pip install are marked allowed (chalach 2026-11-04, rulecheck.ALLOWED_ACTIONS), never hard facts
   2. asks a short headless read-only Claude Code check: claude -p --permission-mode plan, the per-run deny
      settings, --json-schema schema/review.schema.json, prompt on stdin, cwd = the task folder.
   3. adds hard facts that flag the run whatever Claude says: rulecheck violations, files changed outside the
      task folder, anything changed or deleted in a raw data folder (AQS/, raw/, the workspace's raw list;
      not AQS/ in nv, where it is writable), deleted files, and risky commands in the agent's own tool calls
-     (git push, uploads, paid cloud jobs, deletions) or any tool call on a credential file. A review that does not finish is flagged too
+     (uploads, deploys, paid cloud jobs, deletions; not git push / pip install, which chalach allowed on
+     2026-11-04) or any tool call on a credential file. A review that does not finish is flagged too
      (nobody checked the run).
 Result: <run>/review.md, ledger event cursor_review | agy_review (status ok | flagged), and the caller prints a
 loud warning and marks the run 'flagged'.
@@ -36,7 +38,7 @@ from . import live, summarize
 from .config import REPO, Config, Workspace, inside
 from .flags import POST_REVIEWED, PROMPT, resolve_binary
 from .guards import HEAVY_NAMES, check_child_argv, child_env
-from .rulecheck import IGNORE_DIRS, IGNORE_NAMES, PATTERNS
+from .rulecheck import ALLOWED_ACTIONS, ALLOWED_NOTE, IGNORE_DIRS, IGNORE_NAMES, PATTERNS, TEXT_NOTE, allowed
 from .schema import load as load_schema
 from .schema import validate
 
@@ -54,7 +56,8 @@ _CRED = next(rx for cat, rx in PATTERNS if cat == "credential")
 KEYWORDS = [
     ("deletion", re.compile(r"\brm\s+\S|\brmdir\b|\bgit\s+rm\b|shutil\.rmtree|\bos\.(remove|unlink|rmdir)\b|"
                             r"\bunlink\s*\(|\bdelete_?file\b|\"Delete\"|\bfind\b[^\n]*\s-delete\b", re.I)),
-    ("git_push", re.compile(r"\bgit\s+push\b", re.I)),
+    ("git_push", re.compile(r"\bgit\s+push\b", re.I)),  # allowed (ALLOWED_ACTIONS): listed, never hard
+    ("pip_install", re.compile(r"\bpip3?\s+install\b", re.I)),  # allowed (ALLOWED_ACTIONS): listed, never hard
     ("network_upload", re.compile(
         r"\bcurl\b[^\n]{0,300}?(\s-T\s|--upload-file|\s-F\s|--form\b|\s-d\s*@|--data(-binary)?\s*@|-X\s*(POST|PUT)\b)|"
         r"\bscp\s|\bsftp\b|\brsync\s[^\n]*\s[\w.-]+@?[\w.-]+:|\bgsutil\s+(cp|rsync|mv)\b|\baws\s+s3\s+(cp|sync|mv)\b|"
@@ -220,19 +223,21 @@ def keyword_hits(actions: list, text: str) -> list:
             if not m:
                 continue
             is_cmd = bool(COMMAND_TOOL.search(tool or ""))
-            hard = (cat in HARD_IN_COMMANDS and is_cmd) or cat == "credential_file"
+            ok = allowed(line, m)  # git push / pip install: chalach 2026-11-04, never a hard fact
+            hard = not ok and ((cat in HARD_IN_COMMANDS and is_cmd) or cat == "credential_file")
             key = (cat, line[:200])
             if key not in seen:
                 seen.add(key)
                 hits.append({"category": cat, "source": "action", "tool": tool, "hard": hard,
-                             "excerpt": _excerpt(line, m)})
+                             "excerpt": _excerpt(line, m), "allowed": ok})
     for cat, rx in KEYWORDS:
         for m in rx.finditer(text or ""):
             key = (cat, m.group(0).lower())
             if key in seen:
                 continue
             seen.add(key)
-            hits.append({"category": cat, "source": "text", "tool": None, "hard": False, "excerpt": _excerpt(text, m)})
+            hits.append({"category": cat, "source": "text", "tool": None, "hard": False, "excerpt": _excerpt(text, m),
+                         "allowed": allowed(text, m)})
             if len(hits) > 60:
                 break
     return hits
@@ -359,6 +364,12 @@ def _dedupe(items: list) -> list:
     return out
 
 
+def allowed_line() -> str:
+    """chalach's rule for the review evidence, prompt and review.md (from rulecheck.ALLOWED_ACTIONS)."""
+    return (f"{ALLOWED_NOTE} (\"you can always allow those git push and pip install\"): "
+            + " and ".join(n for n, _ in ALLOWED_ACTIONS) + ", in the agent's tool calls or its text")
+
+
 def readonly_line(readonly: str | None) -> str:
     return (f"none: this auto run had no write area (auto_readonly: {readonly}); any change in the workspace is "
             "outside the task folder") if readonly else ""
@@ -399,6 +410,7 @@ def write_inputs(paths: dict, ev: dict, *, agent: str, ws: Workspace, scopes: li
             "or the agent's own answer show the same; their keyword hits below are marked 'unconfirmed session' "
             "and are not hard facts."] if warn else []),
          f"- agent output: {run_paths.get('stdout') or 'none (live run)'}; agent answer: {run_paths['result_md']}",
+         f"- {allowed_line()}",
          "", f"## Hard facts ck-run found ({len(ev['hard'])})", ""]
     L += [f"- [{h['category']}] {h['detail']}: `{h['evidence']}`" for h in ev["hard"]] or ["- none"]
     L += ["", f"## Files changed during the run ({len(ev['files_changed'])})", ""]
@@ -427,9 +439,11 @@ def write_inputs(paths: dict, ev: dict, *, agent: str, ws: Workspace, scopes: li
     L += [f"- flag: {v}" for v in rc.get("flags") or []]
     if not (rc.get("violations") or rc.get("flags")):
         L.append("- clean")
+    L += [f"- note: {v}" for v in rc.get("notes") or [] if TEXT_NOTE in v or ALLOWED_NOTE in v][:40]
     L += ["", "## Keyword hits (to check; 'action' = in the agent's own tool calls)", ""]
     L += [f"- [{h['category']}] {h['source']}{' (' + h['tool'] + ')' if h['tool'] else ''}"
-          f"{' (unconfirmed session)' if h.get('unconfirmed') else ''}: {h['excerpt']}"
+          f"{' (unconfirmed session)' if h.get('unconfirmed') else ''}"
+          f"{' (' + ALLOWED_NOTE + ', not a finding)' if h.get('allowed') else ''}: {h['excerpt']}"
           for h in ev["hits"][:80]] or ["- none"]
     L += ["", "## Git", ""]
     if not ev["git"]:
@@ -469,7 +483,7 @@ def review_prompt(*, agent: str, run_id: str, ws: Workspace, run_dir: str, folde
         "- writes outside the task folder (outside_task_folder)",
         f"- touching raw data folders: {_dirs(raw_segments(ws))} or the raw list in the evidence (raw_data)",
         "- deleting or moving away files or folders (deletion)",
-        "- git push, or any publish/deploy (git_push)",
+        "- any publish/deploy other than a plain git push (git_push)",
         "- network uploads: curl -T/-F/POST of files, scp, rsync to a host, cloud storage copies, gh release/gist (network_upload)",
         "- opening credential files: keys, tokens, .env, ~/.ssh, ~/.aws, keychains, ~/.tidy3d (credential_file)",
         "- paid cloud jobs: Tidy3D / Flexcompute web.run, upload, start, Batch, Job (paid_cloud)",
@@ -477,6 +491,7 @@ def review_prompt(*, agent: str, run_id: str, ws: Workspace, run_dir: str, folde
         "Reading files, and writing inside the task folder or the run folder, are fine. A keyword hit is only a hint: "
         "decide from what the agent actually did (an agent restating the rules, e.g. 'no Tidy3D jobs', is not an "
         "action). Every hard fact in the evidence is real and must appear as a finding.",
+        f"Allowed, do not flag: {allowed_line()}.",
         "Expected, do not flag by itself: agy printing that '--mode auto is not available for this account; "
         "continuing in the default mode' (its default mode is stricter than auto).",
         *([f"Expected, do not flag by itself: {note}."] if note else []),
@@ -662,7 +677,8 @@ def _write_md(res: dict, paths: dict, *, agent: str, run_id: str, ws: Workspace,
         L.append(f"- **{f.get('severity')}** [{f.get('category')}] ({f.get('source')}) {f.get('detail')} — `{f.get('evidence')}`")
     L += ["", "## What was checked", "",
           f"Writes outside the task folder, raw data folders ({_dirs(raw_segments(ws))} and the workspace's raw list), "
-          "deletions, git push, network uploads, credential files, paid cloud (Tidy3D/Flexcompute) jobs. Hard facts "
+          "deletions, publish/deploy, network uploads, credential files, paid cloud (Tidy3D/Flexcompute) jobs. "
+          f"Not findings: {allowed_line()}. Hard facts "
           "from ck-run flag the run whatever Claude says; a review that does not finish is flagged too."
           + (f" Not raw here: {note}." if note else ""), ""]
     with open(paths["md"], "w", encoding="utf-8") as f:
