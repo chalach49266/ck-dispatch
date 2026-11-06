@@ -12,14 +12,15 @@ the run folder as --add-dir, so neither stops to ask before acting there. After 
        first RUN line is this run's (live.find_session). If ck-run found it only by a weaker match (it just
        mentions the run id), the evidence and the prompt say so, and its tool calls give hints, not hard facts.
      - rulecheck violations/flags and keyword hits (deletion, git push, upload, credential file, Tidy3D/Flexcompute);
-       git push and pip install are marked allowed (chalach 2026-11-04, rulecheck.ALLOWED_ACTIONS), never hard facts
+       git push and pip install are marked allowed (chalach 2026-11-04, rulecheck.ALLOWED_ACTIONS), never hard facts;
+       so are the agent's built-in web search / fetch tool calls (chalach 2026-11-05, rulecheck.WEB_TOOLS)
   2. asks a short headless read-only Claude Code check: claude -p --permission-mode plan, the per-run deny
      settings, --json-schema schema/review.schema.json, prompt on stdin, cwd = the task folder.
   3. adds hard facts that flag the run whatever Claude says: rulecheck violations, files changed outside the
      task folder, anything changed or deleted in a raw data folder (AQS/, raw/, the workspace's raw list;
      not AQS/ in nv, where it is writable), deleted files, and risky commands in the agent's own tool calls
      (uploads, deploys, paid cloud jobs, deletions; not git push / pip install, which chalach allowed on
-     2026-11-04) or any tool call on a credential file. A review that does not finish is flagged too
+     2026-11-04) or any tool call on a credential file (not a web search / fetch query or URL: chalach 2026-11-05). A review that does not finish is flagged too
      (nobody checked the run).
 Result: <run>/review.md, ledger event cursor_review | agy_review (status ok | flagged), and the caller prints a
 loud warning and marks the run 'flagged'.
@@ -38,7 +39,8 @@ from . import live, summarize
 from .config import REPO, Config, Workspace, inside
 from .flags import POST_REVIEWED, PROMPT, resolve_binary
 from .guards import HEAVY_NAMES, check_child_argv, child_env
-from .rulecheck import ALLOWED_ACTIONS, ALLOWED_NOTE, IGNORE_DIRS, IGNORE_NAMES, PATTERNS, TEXT_NOTE, allowed
+from .rulecheck import (ALLOWED_ACTIONS, ALLOWED_NOTE, IGNORE_DIRS, IGNORE_NAMES, PATTERNS, TEXT_NOTE, WEB_NOTE,
+                        WEB_TOOLS, allowed, is_web_tool)
 from .schema import load as load_schema
 from .schema import validate
 
@@ -214,22 +216,23 @@ def agent_actions(agent: str, session_path: str | None) -> list:
 
 
 def keyword_hits(actions: list, text: str) -> list:
-    """[{category, source: action|text, tool, excerpt, hard}]"""
+    """[{category, source: action|text, tool, excerpt, hard, allowed, web}]"""
     hits, seen = [], set()
     for tool, args in actions:
         line = f"{tool}: {args}"
+        web = is_web_tool(tool)  # web search / fetch query or URL: chalach 2026-11-05, never a hard fact
         for cat, rx in KEYWORDS:
             m = rx.search(line)
             if not m:
                 continue
             is_cmd = bool(COMMAND_TOOL.search(tool or ""))
             ok = allowed(line, m)  # git push / pip install: chalach 2026-11-04, never a hard fact
-            hard = not ok and ((cat in HARD_IN_COMMANDS and is_cmd) or cat == "credential_file")
+            hard = not ok and not web and ((cat in HARD_IN_COMMANDS and is_cmd) or cat == "credential_file")
             key = (cat, line[:200])
             if key not in seen:
                 seen.add(key)
                 hits.append({"category": cat, "source": "action", "tool": tool, "hard": hard,
-                             "excerpt": _excerpt(line, m), "allowed": ok})
+                             "excerpt": _excerpt(line, m), "allowed": ok, "web": web})
     for cat, rx in KEYWORDS:
         for m in rx.finditer(text or ""):
             key = (cat, m.group(0).lower())
@@ -370,6 +373,13 @@ def allowed_line() -> str:
             + " and ".join(n for n, _ in ALLOWED_ACTIONS) + ", in the agent's tool calls or its text")
 
 
+def web_allowed_line() -> str:
+    """chalach's web rule for the review evidence, prompt and review.md (from rulecheck.WEB_TOOLS)."""
+    return (f"{WEB_NOTE} (\"I want to clear the restriction\"): the agent's built-in web search / fetch tool calls ("
+            + ", ".join(sorted(WEB_TOOLS)) + "); a query or URL is not a command, an upload or a file access. Shell "
+            "network commands (curl, wget, scp, rsync, ssh) are not web tools and keep their checks")
+
+
 def readonly_line(readonly: str | None) -> str:
     return (f"none: this auto run had no write area (auto_readonly: {readonly}); any change in the workspace is "
             "outside the task folder") if readonly else ""
@@ -411,6 +421,7 @@ def write_inputs(paths: dict, ev: dict, *, agent: str, ws: Workspace, scopes: li
             "and are not hard facts."] if warn else []),
          f"- agent output: {run_paths.get('stdout') or 'none (live run)'}; agent answer: {run_paths['result_md']}",
          f"- {allowed_line()}",
+         f"- {web_allowed_line()}",
          "", f"## Hard facts ck-run found ({len(ev['hard'])})", ""]
     L += [f"- [{h['category']}] {h['detail']}: `{h['evidence']}`" for h in ev["hard"]] or ["- none"]
     L += ["", f"## Files changed during the run ({len(ev['files_changed'])})", ""]
@@ -439,11 +450,12 @@ def write_inputs(paths: dict, ev: dict, *, agent: str, ws: Workspace, scopes: li
     L += [f"- flag: {v}" for v in rc.get("flags") or []]
     if not (rc.get("violations") or rc.get("flags")):
         L.append("- clean")
-    L += [f"- note: {v}" for v in rc.get("notes") or [] if TEXT_NOTE in v or ALLOWED_NOTE in v][:40]
+    L += [f"- note: {v}" for v in rc.get("notes") or [] if TEXT_NOTE in v or ALLOWED_NOTE in v or WEB_NOTE in v][:40]
     L += ["", "## Keyword hits (to check; 'action' = in the agent's own tool calls)", ""]
     L += [f"- [{h['category']}] {h['source']}{' (' + h['tool'] + ')' if h['tool'] else ''}"
           f"{' (unconfirmed session)' if h.get('unconfirmed') else ''}"
-          f"{' (' + ALLOWED_NOTE + ', not a finding)' if h.get('allowed') else ''}: {h['excerpt']}"
+          f"{' (' + ALLOWED_NOTE + ', not a finding)' if h.get('allowed') else ''}"
+          f"{' (' + WEB_NOTE + ', not a finding)' if h.get('web') else ''}: {h['excerpt']}"
           for h in ev["hits"][:80]] or ["- none"]
     L += ["", "## Git", ""]
     if not ev["git"]:
@@ -492,6 +504,7 @@ def review_prompt(*, agent: str, run_id: str, ws: Workspace, run_dir: str, folde
         "decide from what the agent actually did (an agent restating the rules, e.g. 'no Tidy3D jobs', is not an "
         "action). Every hard fact in the evidence is real and must appear as a finding.",
         f"Allowed, do not flag: {allowed_line()}.",
+        f"Allowed, do not flag: {web_allowed_line()}.",
         "Expected, do not flag by itself: agy printing that '--mode auto is not available for this account; "
         "continuing in the default mode' (its default mode is stricter than auto).",
         *([f"Expected, do not flag by itself: {note}."] if note else []),
@@ -678,7 +691,7 @@ def _write_md(res: dict, paths: dict, *, agent: str, run_id: str, ws: Workspace,
     L += ["", "## What was checked", "",
           f"Writes outside the task folder, raw data folders ({_dirs(raw_segments(ws))} and the workspace's raw list), "
           "deletions, publish/deploy, network uploads, credential files, paid cloud (Tidy3D/Flexcompute) jobs. "
-          f"Not findings: {allowed_line()}. Hard facts "
+          f"Not findings: {allowed_line()}; {web_allowed_line()}. Hard facts "
           "from ck-run flag the run whatever Claude says; a review that does not finish is flagged too."
           + (f" Not raw here: {note}." if note else ""), ""]
     with open(paths["md"], "w", encoding="utf-8") as f:

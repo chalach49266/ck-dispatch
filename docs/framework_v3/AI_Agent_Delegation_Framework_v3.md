@@ -137,7 +137,7 @@ Skill: `ck-delegate` (in `~/PhD_local/grok-bot-skills`). Per-agent steps: `claud
 |---|---|---|
 | 1 Read the wiki and rule files first | The prompt header names `index.md`, the retrieval guide and the rule files by absolute path | `files_read` must show them; otherwise `partial` |
 | 2 Raw data folders are read-only | Read mode by default; write-scope rules (§4.3); Claude Edit denies on raw folders | rule check: any change in a raw folder = violation |
-| 3 No Tidy3D/Flexcompute cloud jobs without approval | Clean env (no SimCloud keys); Claude denied `~/.tidy3d/**`, WebFetch, WebSearch, curl, wget; Codex edit sandbox has network off | transcript scan for cloud-sim calls |
+| 3 No Tidy3D/Flexcompute cloud jobs without approval | Clean env (no SimCloud keys); Claude denied `~/.tidy3d/**`, curl, wget; Codex edit sandbox has network off for shell commands. Built-in web search/fetch is allowed for every agent since 2026-11-05 (chalach: "I want to clear the restriction"; it cannot start a cloud job) | transcript scan for cloud-sim calls |
 | 4 No clones, venvs or `node_modules` in OneDrive | Claude denied `git clone`, venv, pip/npm/uv/conda install; a write scope can't be a `.git`/`.venv`/`node_modules` path | rule check: a new `.git`, `.venv`, `venv`, `node_modules` or `site-packages` in OneDrive = violation |
 | 5 Never skip-permissions / bypass / yolo / force | Flag map has no such path, plus the refused-flag check (§4.2). **One approved exception (D7, chalach 2026-11-03):** Cursor auto = allow-all `--force`, injected only by ck-run and always followed by a mandatory Claude review (§4.7) | `cmd.txt` and the ledger |
 | 6 Plan/read-only by default | `--mode edit` needs `--approved` and `--write-scope` | any file change in read mode = violation |

@@ -300,6 +300,9 @@ def main():
         for c in ctrl.get("bash", []):
             print(json.dumps({"type": "assistant", "message": {"content": [
                 {"type": "tool_use", "name": "Bash", "input": {"command": c}}]}}))
+        for name, inp in ctrl.get("tools", []):  # any tool call, e.g. ["WebSearch", {"query": ...}]
+            print(json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": name, "input": inp}]}}))
         ev = {"type": "result", "subtype": "success", "is_error": False, "result": final,
               "session_id": "stub-claude", "total_cost_usd": 0.01}
         if mode == "json":
@@ -311,6 +314,8 @@ def main():
         for c in ["sed -n 1,80p index.md"] + ctrl.get("bash", []):
             print(json.dumps({"type": "item.completed", "item": {"type": "command_execution",
                                                                  "command": f"bash -lc '{c}'", "exit_code": 0}}))
+        for q in ctrl.get("web_search", []):  # codex exec --json web search item
+            print(json.dumps({"type": "item.completed", "item": {"id": "ws_1", "type": "web_search", "query": q}}))
         if final:
             print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": final}}))
             out = arg_after("-o")

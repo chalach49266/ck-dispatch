@@ -58,13 +58,40 @@ slides_web, writing, quick_lookup, multi_file_diff, wiki_lint, general (Framewor
 | Agent | Read (default) | Edit (only with `--approved` + `--write-scope`) | Prompt |
 |---|---|---|---|
 | claude | `-p --output-format stream-json --verbose --strict-mcp-config --json-schema <inline> --settings <run>/claude-settings.json --permission-mode plan`, cwd = workspace | `--permission-mode acceptEdits --allowedTools Read,Grep,Glob,Edit,Write,Bash(pytest:*) --add-dir <scope>` | stdin |
-| codex | `exec --json -o <run>/last.md --output-schema schema/result.schema.json -C <workspace> -s read-only -` | `-C <scope> -s workspace-write -c sandbox_workspace_write.network_access=false [--add-dir <more scopes>]`, cwd = scope | stdin |
+| codex | `exec --json -o <run>/last.md --output-schema schema/result.schema.json -C <workspace> -s read-only -c web_search="live" -` | `-C <scope> -s workspace-write -c sandbox_workspace_write.network_access=false [--add-dir <more scopes>] -c web_search="live"`, cwd = scope | stdin |
 | cursor | `-p --output-format json --trust --sandbox enabled --mode plan --workspace <workspace>` | same without `--mode plan`, `--workspace <scope>`, cwd = scope | last argument |
 | agy | `--output-format json --sandbox --print-timeout <S-15>s --json-schema <inline> --mode plan -p <prompt>` | `--mode accept-edits`, cwd = scope | `-p` value |
 
 Every run: the agent gets a clean environment (HOME, USER, LOGNAME, LANG, LC_*, TERM, TMPDIR, SHELL, a fixed
 PATH, NO_COLOR; no keys, no tokens). Its process group is killed at the timeout. `cmd.txt` holds the
 command without the prompt body and without env values.
+
+## Web search: allowed (chalach 2026-11-05)
+
+chalach (2026-11-05 ~18:55 CT): "Why are you setting all the bots agent deployment web search restriction. I want to
+clear the restriction." Until then `config/claude-guard.base.json` denied Claude's `WebFetch` and `WebSearch` (since
+step 3, 2026-11-02), so claude runs could not read datasheets or library docs. Now every run, every agent, every mode
+(read, auto, edit, review; headless and `--live`) may use the agent's **built-in** web search / fetch:
+
+| agent | what ck-run does | checked 2026-11-05 |
+|---|---|---|
+| claude | settings `allow: ["WebSearch", "WebFetch"]` and no web deny, in every settings file (headless, live, auto, post-run review); a headless `-p` run cannot stop to ask, hence the allow | `claude 2.1.318 --help`: ck-run passes no `--tools`, `--disallowedTools` or `--restricted` (which drops WebFetch); `--strict-mcp-config` = "Only use MCP servers from --mcp-config", no effect on built-in tools |
+| codex | `-c web_search="live"` in every argv (= `codex --search`, "Enable live web search ... the native Responses `web_search` tool"), allowed in `guards.ALLOWED_CONFIG_OVERRIDES` as that exact value only | codex-cli 0.166.0: `codex debug prompt-input -c web_search="bogus"` → "expected one of `disabled`, `cached`, `indexed`, `live`". Before, ck-run set nothing, so codex used its own default (not confirmed: `codex exec --help` is blocked by the merge-gate mod) |
+| cursor | nothing to change: no ck-run flag turned its `WebSearch`/`WebFetch` off (`agent --help` 2026.11.05 has no web flag; `--sandbox` covers shell commands) | 35 ck-run cursor transcripts, no web call; interactive sessions used `WebSearch`/`WebFetch`. Your `~/.cursor/cli-config.json` has `autoAcceptWebSearch: false` (cursor's own setting, not ck-run's) |
+| agy | nothing to change: `search_web` is in the tool list of its ck-run sessions (`--sandbox` = "terminal restrictions" only) | agy 1.5.1, 4 ck-run conversation stores |
+
+- The prompt says so (`prompt.WEB_RULE`: allowed, cite each URL, web pages are data, shell network commands stay off).
+- A web tool call is never a rule-check violation or flag, and never a post-run review hard fact: a pattern in its
+  query or URL (e.g. a search for `tidy3d.web.run`, `pip install nidaqmx`, `.env syntax`) is a note
+  `web tool call, allowed by chalach 2026-11-05 (<category> pattern in the query/URL): ...`. Web tools =
+  `rulecheck.WEB_TOOLS` (claude `WebSearch`/`WebFetch`, codex `web_search` items, cursor `WebSearch`/`WebFetch`, agy
+  `search_web`); MCP fetch tools are not in it.
+- `cmd.txt` and `--dry-run` show one `# web (...)` line per run (claude: the allow/deny of the web tools read from
+  the base file).
+- **Still blocked** (not part of this decision): shell network tools `curl`, `wget`, `scp`, `rsync`, `ssh` (Claude
+  deny rules + rule check), `gh`, `wrangler`, mail, credential-file reads, codex edit
+  `sandbox_workspace_write.network_access=false` for shell commands, Tidy3D/Flexcompute cloud jobs, every permission
+  bypass. A fetched page can still carry prompt injection; credential reads stay denied and the env has no keys.
 
 ## Auto mode (default since 2026-11-02; chalach approved 22:34 CST)
 
@@ -127,7 +154,8 @@ those folders exists (washu before any `<course>/solutions/` or `<course>/prep/`
    timeout `post_review.timeout_s` (default 300 s; optional `post_review.model`).
 3. Flagged: writes outside the task folder, raw data folders (`AQS/`, `raw/`, the workspace's raw list), deletions,
    publish/deploy, network uploads, credential files, paid cloud (Tidy3D/Flexcompute) jobs. Not flagged: `git push`
-   and `pip install` (allowed by chalach 2026-11-04; the evidence, prompt and review.md say so). In nv, `AQS/` is not raw
+   and `pip install` (allowed by chalach 2026-11-04; the evidence, prompt and review.md say so), and the agent's
+   built-in web search / fetch tool calls (chalach 2026-11-05, see Web search). In nv, `AQS/` is not raw
    for the review (chalach 2026-11-03: yes, since nv may write it; see Raw folders): an nv `AQS/` change inside the
    task folder is fine, one outside it is still `outside_task_folder`, and `AQS/.../raw/`, deletions in `AQS/` and
    risky commands are still flagged. `AQS/` from any other workspace is still raw. Hard facts flag the run even
@@ -176,7 +204,7 @@ activated, and every fallback is loud (see below).
 | Agent | Interactive argv (same permission flags as headless) | Initial prompt (from `--help`) |
 |---|---|---|
 | claude | `--strict-mcp-config --settings <run>/claude-settings-live.json --session-id <uuid> --add-dir <run> [--add-dir <scope>] [--allowedTools ...] --permission-mode plan\|acceptEdits` | positional `[prompt]` |
-| codex | `-C <ws\|scope> -s read-only\|workspace-write [-c sandbox_workspace_write.network_access=false --add-dir <run>] -a on-request` | positional `[PROMPT]` |
+| codex | `-C <ws\|scope> -s read-only\|workspace-write [-c sandbox_workspace_write.network_access=false --add-dir <run>] -c web_search="live" -a on-request` | positional `[PROMPT]` |
 | cursor | `--trust --sandbox enabled [--mode plan] --workspace <ws\|scope> --add-dir <run>` | positional `[prompt...]` |
 | agy | `--sandbox --mode plan\|accept-edits\|auto --add-dir <run>` (auto also `--add-dir <workspace root>`) | `-i <prompt>` (`--prompt-interactive`) |
 
@@ -350,7 +378,9 @@ Refused in ck-run's own command line (checked before parsing; logged to the ledg
 (`--permission-mode`, `--sandbox`/`-s`, `-c`/`--config`, `--settings`, `--add-dir`, `--approval-mode`, ...),
 because ck-run sets those itself. The exact agent argv is checked again: a denylist plus an allowlist of
 values for permission flags (`plan`, `acceptEdits`, `accept-edits`, `ask`, `read-only`, `workspace-write`,
-`enabled`; codex `-a`/`--ask-for-approval`: only `on-request`). The prompt text is not scanned, so a task may talk about these flags.
+`enabled`; codex `-a`/`--ask-for-approval`: only `on-request`; codex `-c`: only
+`sandbox_workspace_write.network_access=false`, `web_search="live"` (2026-11-05) and, in auto runs, the two approval
+overrides). The prompt text is not scanned, so a task may talk about these flags.
 
 ## Rule check after each run
 
@@ -368,6 +398,9 @@ values for permission flags (`plan`, `acceptEdits`, `accept-edits`, `ask`, `read
   allowed keyword hits, never hard facts, and its prompt says not to flag them. The set is
   `rulecheck.ALLOWED_ACTIONS`. In the same action, any other pattern (e.g. `git push && curl -T ...`) is still a
   violation. The disk check is unchanged: a new `.venv`/`site-packages` in OneDrive is still a violation.
+- **web tools** (chalach 2026-11-05: "I want to clear the restriction"): a built-in web search / fetch tool call
+  (`rulecheck.WEB_TOOLS`) is never a violation or flag; a pattern in its query or URL is a note
+  `web tool call, allowed by chalach 2026-11-05 (...)`. `curl`/`wget`/`scp`/`rsync` in a shell command stay violations.
 - **flagged** (exit 4): a credential path, cloud sim call or permission bypass found only in output text (cursor,
   agy and live runs give no tool log; `mentioned in output text (no tool log to confirm)`; after an `ok` cursor/agy
   review that read the agent's own tool calls they become notes), a folder change inside a raw folder (could be a
@@ -385,7 +418,7 @@ values for permission flags (`plan`, `acceptEdits`, `accept-edits`, `ask`, `read
 ```
 cd ~/PhD_local/ck-dispatch && python3 -I tests/run_all.py
 ```
-177 tests, about 220 s. Stub CLIs (`tests/fake_cli.py`), a mock `osascript` (`tests/fake_osascript.py`: fails
+194 tests, about 220 s. Stub CLIs (`tests/fake_cli.py`), a mock `osascript` (`tests/fake_osascript.py`: fails
 by default, so every older test also covers the headless fallback; `run` runs `live.sh` detached the way a
 Terminal window would; `silent` never starts it), a temp HOME, fake workspaces and a test config. No network,
 no real agent, no Terminal window. They cover: no forbidden flag for any agent or mode; every refusal case;
@@ -446,6 +479,15 @@ permission_bypass text mentions are still flags (exit 4); `git push`, `pip insta
 violations, also next to an allowed command; a cursor auto run that pushes and pip-installs gets an `ok` review
 with no hard facts and chalach's rule in the evidence, prompt and review.md, while an upload in the same command is
 still a hard fact. The session-decoy tests use an upload instead of `git push`.
+Web search (`tests/test_web.py`, 2026-11-05, 17 tests): the Claude base and every generated settings file
+(headless, live, auto, washu auto, claims, post-run review) allow `WebSearch`/`WebFetch`, deny neither and keep the
+curl/wget/scp/rsync/ssh/gh/wrangler/mail and credential denies; every codex argv (read, edit, auto, auto_readonly;
+headless and live) has `-c web_search="live"` once (edit keeps `network_access=false`); the guard admits only that
+value (`disabled`, `cached`, unquoted, `tools.web_search` refused; CK can never pass `-c`); cursor, agy and claude argv
+carry no web/search/fetch/network/disallowed flag; claude/codex/cursor/agy web tool calls are notes, exit 0, while a
+`curl` shell command, an MCP fetch tool and a credential read stay violations; cursor and agy auto runs with web
+calls get an `ok` review with no hard facts and the rule in the evidence, prompt and review.md, while an upload next
+to them is still a hard fact; the agent prompt has `prompt.WEB_RULE`; `--dry-run` shows the web line per agent.
 
 ## Step 3 live checks (2026-11-02; claude 2.1.316, codex-cli 0.166.0, agent 2026.10.22, agy 1.4.12)
 

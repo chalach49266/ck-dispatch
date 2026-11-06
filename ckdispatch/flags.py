@@ -49,6 +49,10 @@ needed changing. Codex was not run live (blocked by the merge-gate mod), so its 
 --live (build_live, 2026-11-02): the same permission flags on each CLI's interactive mode (cursor auto: --force,
 agy auto: --mode auto + --add-dir <workspace root> + --add-dir <run>). Initial
 prompt, per each CLI's --help: claude [prompt], codex [PROMPT], cursor agent [prompt...], agy -i <prompt>.
+
+Web search (chalach 2026-11-05 ~18:55 CT: "I want to clear the restriction"): every codex argv above (all modes,
+headless and --live) also gets -c web_search="live" (CODEX_WEB_CONFIG). Claude's WebSearch/WebFetch are allowed
+by its settings file (config/claude-guard.base.json). Cursor and agy have no web flag; ck-run never turned theirs off.
 """
 from __future__ import annotations
 
@@ -76,6 +80,14 @@ AUTO_AREAS = {a: ["workspace", "local"] for a in AGENTS}   # where an auto-mode 
 POST_REVIEWED = ("cursor", "agy")  # auto runs of these get the mandatory read-only Claude review (postreview.py)
 CODEX_AUTO_MODEL = "gpt-6.1-sol"  # chalach: Astra 6 only for complex tasks (pass --model gpt-6-astra)
 CODEX_AUTO_CONFIG = ["-c", 'approval_policy="on-request"', "-c", 'approvals_reviewer="auto_review"']
+# Web search (chalach 2026-11-05 ~18:55 CT: "I want to clear the restriction"), every codex run, every mode, headless
+# and --live. codex-cli 0.166.0 `codex --help`: "--search  Enable live web search. When enabled, the native Responses
+# `web_search` tool is available to the model"; the config key is `web_search` = disabled|cached|indexed|live (checked
+# 2026-11-05: `codex debug prompt-input -c web_search="bogus"` -> "unknown variant `bogus`, expected one of
+# `disabled`, `cached`, `indexed`, `live` in `web_search`"). `-c` instead of `--search` because `codex exec --help`
+# could not be read (the merge-gate mod blocks any `codex exec` command line). The tool runs on OpenAI's side; the
+# sandbox network rule (-s, sandbox_workspace_write.network_access=false) still covers shell commands (curl etc.).
+CODEX_WEB_CONFIG = ["-c", 'web_search="live"']
 
 
 class _Prompt:
@@ -161,6 +173,7 @@ def build(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, mo
             for s in scope_paths[1:]:
                 a += ["--add-dir", s]
             cwd = scope_paths[0]
+        a += CODEX_WEB_CONFIG  # live web search in every mode (chalach 2026-11-05)
         if model or mode == "auto":
             a += ["-m", model or CODEX_AUTO_MODEL]
         a += ["-"]  # read the prompt from stdin
@@ -270,6 +283,7 @@ def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: lis
             for s in scope_paths[1:] + [run_dir]:
                 a += ["--add-dir", s]
             cwd = scope_paths[0]
+        a += CODEX_WEB_CONFIG  # live web search in every mode (chalach 2026-11-05)
         a += ["-a", "on-request"]
         if model or mode == "auto":
             a += ["-m", model or CODEX_AUTO_MODEL]

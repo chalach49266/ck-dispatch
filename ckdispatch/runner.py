@@ -17,7 +17,7 @@ from . import VERSION, claims, ledger, live, postreview, route, rulecheck, summa
 from . import prompt as P
 from .config import CLAUDE_GUARD_BASE, PACKET_SCHEMA, REPO, RESULT_SCHEMA, Config, Workspace, inside
 from .errors import Refused
-from .flags import AGENTS, AUTO_AREAS, EDIT_AREAS, SCHEMA_ENFORCED_BY_FLAG, build, build_live, redacted
+from .flags import AGENTS, AUTO_AREAS, CODEX_WEB_CONFIG, EDIT_AREAS, SCHEMA_ENFORCED_BY_FLAG, build, build_live, redacted
 from .guards import child_env, validate_write_scopes
 from .schema import load as load_schema
 from .schema import validate
@@ -170,15 +170,45 @@ def outside_writable(ws: Workspace) -> tuple:
     return dirs, files
 
 
+# chalach 2026-11-05 ~18:55 CT: "I want to clear the restriction" (web search for agent deployments). Claude's
+# built-in web tools: config/claude-guard.base.json allows them and must never deny them (tests/test_web.py).
+CLAUDE_WEB_TOOLS = ("WebSearch", "WebFetch")
+
+
+def claude_base_permissions() -> dict:
+    """{'allow': [...], 'deny': [...]} from config/claude-guard.base.json."""
+    with open(CLAUDE_GUARD_BASE, encoding="utf-8") as f:
+        perms = json.load(f)["permissions"]
+    return {"allow": list(perms.get("allow") or []), "deny": list(perms.get("deny") or [])}
+
+
+def web_line(agent: str) -> str:
+    """cmd.txt / --dry-run line: the agent's built-in web search / fetch (allowed, chalach 2026-11-05)."""
+    if agent == "claude":
+        perms = claude_base_permissions()
+        allow = [t for t in perms["allow"] if t.split("(")[0] in CLAUDE_WEB_TOOLS]
+        deny = [t for t in perms["deny"] if t.split("(")[0] in CLAUDE_WEB_TOOLS]
+        how = f"Claude settings allow {', '.join(allow) or 'none'}; deny {', '.join(deny) or 'none of them'}"
+    else:
+        how = {"codex": f"codex {' '.join(CODEX_WEB_CONFIG)} (= --search, live web search; the sandbox network "
+                        "rule for shell commands is unchanged)",
+               "cursor": "cursor's built-in WebSearch/WebFetch: no ck-run flag turns them off (whether a search asks "
+                         "first is cursor's own autoAcceptWebSearch in ~/.cursor/cli-config.json)",
+               "agy": "agy's built-in search_web: no ck-run flag turns it off (--sandbox restricts terminal commands "
+                      "only)"}[agent]
+    return (f"# web (chalach 2026-11-05: built-in web search/fetch allowed): {how}; shell network tools (curl, wget, "
+            "scp, rsync, ssh) unchanged")
+
+
 def write_claude_settings(cfg: Config, path: str, live_run_dir: str | None = None, auto_ws=None,
                           other_claims: list | None = None) -> None:
-    """Deny rules for one run. Headless: no edits anywhere in agent_runs. Live: the agent must write
+    """Allow + deny rules for one run. Allow: the base's (WebSearch, WebFetch; chalach 2026-11-05). Deny: the
+    base's, plus no edits anywhere in agent_runs (headless). Live: the agent must write
     result.md and summary.md in its own run folder, so agent_runs is denied piece by piece instead: the
     ledger, state, the run registry, every other run folder that exists now, and ck-run's own files in this
     run. other_claims: paths other live runs claimed when this run started (never edit them)."""
-    with open(CLAUDE_GUARD_BASE, encoding="utf-8") as f:
-        base = json.load(f)
-    deny = list(base["permissions"]["deny"])
+    base = claude_base_permissions()
+    deny = list(base["deny"])
     targets = []
     for ws in cfg.workspaces.values():
         if auto_ws is not None and ws.key == auto_ws.key:
@@ -210,7 +240,8 @@ def write_claude_settings(cfg: Config, path: str, live_run_dir: str | None = Non
                 others = []
             deny += [f"Edit(/{rb}/{n}/**)" for n in others]
             deny += [f"Edit(/{rb}/{rid}/{n})" for n in live.CONTROL_FILES]
-    _write(path, json.dumps({"permissions": {"deny": list(dict.fromkeys(deny))}}, indent=1))
+    _write(path, json.dumps({"permissions": {"allow": list(dict.fromkeys(base["allow"])),
+                                             "deny": list(dict.fromkeys(deny))}}, indent=1))
 
 
 def _write(path: str, text: str) -> None:
@@ -435,7 +466,8 @@ def _prepare_and_run(cfg, spec, ws, scopes, cmd, lv, run_dir, paths, base, claim
         f"# env: only {', '.join(sorted(env))}; PATH={env['PATH']}",
         f"# prompt: {paths['prompt']} ({'stdin' if cmd.stdin_prompt else 'last argument'})",
         f"# config: {cfg.path}",
-        redacted(cmd, RESULT_SCHEMA, paths["prompt"])]
+        redacted(cmd, RESULT_SCHEMA, paths["prompt"]),
+        web_line(spec.agent)]
     if lv:
         lv["prompt"] = P.assemble(
             P.header(ws=ws, run_id=spec.run_id, agent=spec.agent, kind=spec.kind, mode=spec.mode,

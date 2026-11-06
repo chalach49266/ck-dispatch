@@ -61,7 +61,13 @@ MODE_VALUES = {
     "--approval-policy": set(),
 }
 CONFIG_FLAGS = {"-c", "--config"}
-ALLOWED_CONFIG_OVERRIDES = {"sandbox_workspace_write.network_access=false"}
+ALLOWED_CONFIG_OVERRIDES = {
+    "sandbox_workspace_write.network_access=false",  # codex edit: no network for shell commands (kept)
+    # codex live web search in every mode, injected by flags.CODEX_WEB_CONFIG (chalach 2026-11-05 ~18:55 CT: "I want
+    # to clear the restriction"; = codex --search). Only this exact value: web_search="disabled"/"cached" and any other
+    # -c stay refused. CK still can never pass -c itself (CK_PERMISSION_FLAGS).
+    'web_search="live"',
+}
 MODEL_FLAGS = {"--model", "-m"}
 
 # ck-run's own options whose value is free text or a path (not checked for bare words).

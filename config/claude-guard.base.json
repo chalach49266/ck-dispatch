@@ -1,6 +1,10 @@
 {
-  "_note": "Base for the per-run Claude settings file (passed with --settings). ck-run adds Edit/Write denies for both workspace roots, every raw folder (also its real path when it is a symlink), ck-dispatch and agent_runs. Deny rules win over allow rules. Step 3 (2026-11-02, claude 2.1.316): a bare '**/x' pattern is relative to the cwd only, so file-name patterns must start with '//**/' to cover every folder; --strict-mcp-config does not drop plugin MCP servers, so mcp__skins is denied here, with the tools that send, publish, schedule or message other sessions.",
+  "_note": "Base for the per-run Claude settings file (passed with --settings). ck-run adds Edit/Write denies for both workspace roots, every raw folder (also its real path when it is a symlink), ck-dispatch and agent_runs. Deny rules win over allow rules. Step 3 (2026-11-02, claude 2.1.316): a bare '**/x' pattern is relative to the cwd only, so file-name patterns must start with '//**/' to cover every folder; --strict-mcp-config does not drop plugin MCP servers, so mcp__skins is denied here, with the tools that send, publish, schedule or message other sessions. Web (chalach 2026-11-05 ~18:55 CT: 'I want to clear the restriction'): the built-in WebSearch and WebFetch tools are allowed in every run (headless, live, post-run review), so they are in 'allow' (a headless -p run cannot stop to ask) and no longer in 'deny'; shell network tools (curl, wget, scp, rsync, ssh), gh, wrangler and mail stay denied.",
   "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch"
+    ],
     "deny": [
       "Read(~/.ssh/**)",
       "Read(~/.gnupg/**)",
@@ -46,8 +50,6 @@
       "Bash(uv pip install:*)",
       "Bash(conda create:*)",
       "Bash(conda install:*)",
-      "WebFetch",
-      "WebSearch",
       "mcp__skins",
       "PublishPlugin",
       "ShareOnboardingGuide",

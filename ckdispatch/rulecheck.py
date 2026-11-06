@@ -47,6 +47,15 @@ ALLOWED_ACTIONS = [
      re.compile(r"(?:\bpython(?:3(?:\.\d+)?)?\s+-m\s+|\buv\s+|\b)pip3?\s+install\b", re.I)),
 ]
 ALLOWED_NOTE = "allowed by chalach 2026-11-04"
+# chalach 2026-11-05 ~18:55 CT (via Grok Bot): "I want to clear the restriction" (web search for agent deployments).
+# The agents' BUILT-IN web search / fetch tool calls are allowed. Their input is a search query or a URL, not a
+# command or a file access, so a pattern in it (a search for "tidy3d.web.run docs", "pip install nidaqmx", ".env
+# syntax") is a note, never a violation or flag (rule check and post-run review). Names checked 2026-11-05: claude
+# WebSearch / WebFetch (tool_use), codex exec item type web_search, cursor WebSearch / WebFetch (its transcripts), agy
+# search_web (the tool list of its ck-run sessions). MCP fetch tools and shell commands (curl, wget, scp, rsync, ssh)
+# are NOT web tools here and keep every rule.
+WEB_TOOLS = {"WebSearch", "WebFetch", "web_search", "search_web"}
+WEB_NOTE = "web tool call, allowed by chalach 2026-11-05"
 # agy print mode on chalach's account (2026-11-03): "--mode auto is not available for this account; continuing in
 # the default mode". For an agy auto run that is expected (default mode is stricter than auto): a note, not a flag.
 AGY_AUTO_FALLBACK = re.compile(r"--mode auto is not available for this account", re.I)
@@ -170,6 +179,11 @@ def classify(cfg: Config, ws: Workspace, mode: str, scopes: list, changed: list,
     return {"violations": violations, "flags": flags, "notes": notes, "changed_in_scope": sorted(set(in_scope))}
 
 
+def is_web_tool(tool) -> bool:
+    """An agent's built-in web search / fetch tool (WEB_TOOLS; chalach 2026-11-05)."""
+    return str(tool or "") in WEB_TOOLS
+
+
 def allowed(text: str, m) -> str | None:
     """Name of the ALLOWED_ACTIONS entry whose match in text covers match m (e.g. 'git push'), else None."""
     for name, arx in ALLOWED_ACTIONS:
@@ -179,12 +193,19 @@ def allowed(text: str, m) -> str | None:
 
 
 def scan_transcript(parsed: dict, stdout: str, stderr: str, agent: str | None = None, mode: str | None = None) -> dict:
-    """Actions (commands, tool inputs) count as attempts -> violation, except ALLOWED_ACTIONS -> note.
-    Free text only (no tool log) -> note, or flag for TEXT_FLAG_CATEGORIES."""
+    """Actions (commands, tool inputs) count as attempts -> violation, except ALLOWED_ACTIONS -> note and web
+    tool calls (WEB_TOOLS, chalach 2026-11-05) -> note. Free text only (no tool log) -> note, or flag for
+    TEXT_FLAG_CATEGORIES."""
     violations, flags, notes = [], [], []
     if parsed.get("actions"):
         for a in parsed["actions"]:
             text = f"{a.get('tool')}: {a.get('input')}"
+            if is_web_tool(a.get("tool")):  # a query or URL (chalach 2026-11-05): a pattern in it is only a note
+                for cat, rx in PATTERNS:
+                    m = rx.search(text)
+                    if m:
+                        notes.append(f"{WEB_NOTE} ({cat} pattern in the query/URL): {_excerpt(text, m)}")
+                continue
             for cat, rx in PATTERNS:
                 hits = list(rx.finditer(text))
                 bad = next((m for m in hits if not allowed(text, m)), None)
