@@ -1,7 +1,7 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["run_id", "status", "summary", "report_md", "findings", "files_read", "files_changed", "numbers", "proposed_changes", "open_questions", "needs_approval"],
+  "required": ["run_id", "status", "summary", "report_md", "findings", "files_read", "files_changed", "numbers", "proposed_changes", "open_questions", "needs_approval", "plain_summary", "verification", "decisions", "later", "you_should_know", "your_move"],
   "properties": {
     "run_id": {"type": "string"},
     "status": {"type": "string", "enum": ["ok", "partial", "blocked", "failed"]},
@@ -27,17 +27,39 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["value", "unit", "source", "verified"],
+        "required": ["value", "unit", "source", "verified", "what_else", "limit"],
         "properties": {
           "value": {"type": "string"},
           "unit": {"type": "string"},
           "source": {"type": "string"},
-          "verified": {"type": "boolean"}
+          "verified": {"type": "boolean"},
+          "what_else": {"type": "string", "description": "What else this number could be measuring, and why that is ruled out. \"\" if none."},
+          "limit": {"type": "string", "description": "What bounds or limits this value. \"\" if none."}
         }
       }
     },
     "proposed_changes": {"type": "string"},
     "open_questions": {"type": "array", "items": {"type": "string"}},
-    "needs_approval": {"type": "array", "items": {"type": "string"}}
+    "needs_approval": {"type": "array", "items": {"type": "string"}},
+    "plain_summary": {"type": "array", "items": {"type": "string"}, "description": "1 to 3 lines for chalach in plain words. No paths, no run ids."},
+    "verification": {"type": "string", "enum": ["hardware", "local_sim", "fake_or_tests", "desk_check", "not_checked"], "description": "The LOWEST level that is true for the whole result: hardware (tested on real lab hardware), local_sim (a simulation you ran), fake_or_tests (fake data or tests you ran), desk_check (read and reasoned only), not_checked."},
+    "decisions": {
+      "type": "array",
+      "description": "Every choice you made, with its source.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["what", "why", "source", "ref"],
+        "properties": {
+          "what": {"type": "string"},
+          "why": {"type": "string"},
+          "source": {"type": "string", "enum": ["paper", "datasheet", "measured", "simulated", "chalach", "guess"]},
+          "ref": {"type": "string", "description": "DOI and figure, datasheet and page, data file path, or chalach's words. \"\" for a guess."}
+        }
+      }
+    },
+    "later": {"type": "array", "items": {"type": "string"}, "description": "Extra ideas you did NOT do. Never do them in this run."},
+    "you_should_know": {"type": "array", "items": {"type": "string"}, "description": "0 to 2 short lines that teach chalach the key fact."},
+    "your_move": {"type": "string", "description": "What chalach should do next, in one line, or \"nothing\"."}
   }
 }

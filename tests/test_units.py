@@ -196,7 +196,10 @@ class TestParsers(unittest.TestCase):
         self.schema = load(RESULT_SCHEMA)
         self.good = {"run_id": "r", "status": "ok", "summary": ["a"], "report_md": "x", "findings": [],
                      "files_read": [], "files_changed": [], "numbers": [], "proposed_changes": "",
-                     "open_questions": [], "needs_approval": []}
+                     "open_questions": [], "needs_approval": [],
+                     # v4 (BUILD_SPEC_v4 7): every property is required (strict mode); empty values mean none
+                     "plain_summary": ["a"], "verification": "desk_check", "decisions": [], "later": [],
+                     "you_should_know": [], "your_move": ""}
 
     def test_schema(self):
         self.assertEqual(validate(self.good, self.schema), [])

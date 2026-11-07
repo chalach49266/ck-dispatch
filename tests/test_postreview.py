@@ -189,7 +189,7 @@ class TestReview(ReviewBase):
     def test_review_timeout_is_flagged(self):
         with open(self.sb.config) as f:
             cfg = json.load(f)
-        cfg["post_review"] = {"timeout_s": 2}
+        cfg["post_review"] = {"enabled": True, "timeout_s": 2}  # v4: the review runs only when enabled (spec 8)
         with open(self.sb.config, "w") as f:
             json.dump(cfg, f)
         self.sb.control(claude={"review": {"sleep": 30}})

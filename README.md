@@ -1,5 +1,30 @@
 # ck-dispatch: `ck-run`
 
+## v4 (2026-11-05)
+
+**User guide for everything new: [`docs/v4.md`](docs/v4.md).** chalach's decisions (2026-11-05): fleet lanes, trigger
+words, sizes with budgets, review reasons, Grok Bot answers S asks itself, a minimal board, ckstack, no post-run review
+("Seventh no need review, since those one are for simple stupid task anyways"), build everything now.
+
+- **Asks and budgets**: `ck-run ask open|close|park|later|answered|list|show`. Runs and reviews carry `--ask`; sizes
+  S, M, L have budgets that ck-run counts. Over budget = **exit 7**; `--over "<chalach's words>"` lets one dispatch pass.
+- **Reviews need a reason**: `ck-run review ... --trigger leaves-lab|hardware-or-raw|agent-unsure|you-asked`.
+- **Models**: `config/models.json` (aliases sol, sol-fast, astra, opus, opus-max, sonnet, haiku, grok, composer,
+  gemini; tiers fast, strong, top; lanes). `--model <alias>`, `--tier`, `ck-run models`, `ck-run route --lane`.
+- **Launch and survive**: `ck-run launch` (detached; writes `agent_runs/<slug>.sh` and `.out`), one iTerm2 window per
+  ask with one tab per run, a stall watchdog, caffeinate while runs wait, `ck-run reattach`.
+- **Views and rules**: `ck-run board|digest|recall|scoreboard|rules [--check]`, `ck-run andon raise|clear|list`.
+- **Patterns**: `ck-run race`, `ck-run race show`, `ck-run panel`, `ck-run loop`.
+- **result.json v4**: `plain_summary`, `verification`, `decisions` (source tags), `later`, `you_should_know`,
+  `your_move`; each number gains `what_else` and `limit`.
+- **Post-run review off** for cursor and agy auto runs (`post_review.enabled`, default false). The rule check still runs.
+- Exit codes: 0 ok · 1 partial · 2 refused · 3 failed/timeout/stalled · 4 flagged · 5 violation · 6 busy · 7 over budget.
+
+The sections below describe the v3 behaviour. Where they disagree with `docs/v4.md` (exit 7, default timeouts per ask
+size, the post-run review, model defaults), `docs/v4.md` is right.
+
+---
+
 One runner that CK (Grok Bot) calls on the Mac to send a task to one of four agent CLIs:
 `claude`, `codex`, `cursor` (binary `agent`) or `agy`. It adds guards, a run folder, a summary of at most
 10 lines, an interaction ledger and cross-review. Python 3 standard library only. Local git, no remote.

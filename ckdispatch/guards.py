@@ -69,9 +69,23 @@ ALLOWED_CONFIG_OVERRIDES = {
     'web_search="live"',
 }
 MODEL_FLAGS = {"--model", "-m"}
+# v4 effort plumbing (2026-11-05, BUILD_SPEC_v4 section 6): ck-run injects these from config/models.json; CK can never
+# pass them (check_ck_argv). In the final child argv they are allowed only for the agent they belong to:
+#   claude  --effort <level>                      levels from `claude --help` (claude 2.1.318)
+#   codex   -c model_reasoning_effort="<level>"   level names seen in the codex-cli 0.166.0 binary
+# Which levels ck-run actually passes is models.json _verified (models.effort_verified); this is only the guard's list.
+CLAUDE_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+CODEX_EFFORTS = {"minimal", "low", "medium", "high", "xhigh", "max"}
+EFFORT_FLAGS = {"--effort"}
+CODEX_EFFORT_KEY = "model_reasoning_effort"
 
-# ck-run's own options whose value is free text or a path (not checked for bare words).
-CK_FREE_TEXT = {"--title", "--note", "--focus", "--approved", "--prompt-file", "--write-scope", "--claim", "--lead"}
+# ck-run's own options whose value is free text or a path (not checked for bare words). v4: chalach's words
+# (--words, --over, --because), Grok Bot's text (--summary, --reason), --plan files, E3 loop's --metric/--target/--cwd.
+CK_FREE_TEXT = {"--title", "--note", "--focus", "--approved", "--prompt-file", "--write-scope", "--claim", "--lead",
+                "--words", "--over", "--because", "--summary", "--reason", "--plan", "--metric", "--target", "--cwd"}
+# ck-run subcommands whose positional arguments are free text (no agent argv is ever built from them):
+# `ck-run ask later <ask> "<item>"`
+CK_TEXT_COMMANDS = {"ask"}
 # Permission flags CK may never pass to ck-run: ck-run sets them itself.
 CK_PERMISSION_FLAGS = {"--permission-mode", "--sandbox", "-s", "--approval-mode", "--approval-policy",
                        "-a", "--ask-for-approval", "-c", "--config", "--settings", "--allowedtools",
@@ -90,6 +104,7 @@ def _bad_substring(tok: str) -> str | None:
 
 def check_ck_argv(argv: list) -> None:
     """Refuse forbidden permission flags or words in ck-run's own command line."""
+    text_positionals = bool(argv) and str(argv[0]).lower() in CK_TEXT_COMMANDS
     i = 0
     while i < len(argv):
         t = str(argv[i])
@@ -103,6 +118,9 @@ def check_ck_argv(argv: list) -> None:
                 raise Refused(f"forbidden flag {t}")
             if name in CK_PERMISSION_FLAGS:
                 raise Refused(f"{t} is not accepted: ck-run sets agent permissions itself (use --mode auto|read|edit)")
+            if name in EFFORT_FLAGS or CODEX_EFFORT_KEY in name:
+                raise Refused(f"{t} is not accepted: ck-run sets the model effort itself from --tier or a --model "
+                              "alias (see: ck-run models)")
             value = val if eq else (str(argv[i + 1]) if i + 1 < len(argv) else None)
             if name == "--mode" and value is not None:
                 if value.lower() not in ("read", "edit", "auto"):
@@ -116,6 +134,8 @@ def check_ck_argv(argv: list) -> None:
             if not eq and (name in CK_FREE_TEXT or name in MODEL_FLAGS):
                 i += 2
                 continue
+        elif text_positionals and i > 0:
+            pass  # `ck-run ask ...`: positional text (a Later item) never reaches an agent
         elif low in FORBIDDEN_WORDS:
             raise Refused(f"forbidden permission word '{t}'")
         elif _bad_substring(low) and not os.path.sep in t:
@@ -160,8 +180,12 @@ def check_child_argv(argv: list, prompt_sentinel: object, auto: bool = False, ag
             if name in MODE_VALUES and nxt is not None and nxt not in allowed_vals:
                 raise Refused(f"forbidden mode in agent argv: {name} {nxt}")
             overrides = ALLOWED_CONFIG_OVERRIDES | (AUTO_CONFIG_OVERRIDES if auto else set())
+            if agent == "codex":  # v4: the effort ck-run injects from models.json (never from CK)
+                overrides = overrides | {f'{CODEX_EFFORT_KEY}="{e}"' for e in CODEX_EFFORTS}
             if name in CONFIG_FLAGS and (nxt is None or nxt not in overrides):
                 raise Refused(f"config override not allowed in agent argv: {t} {nxt}")
+            if name in EFFORT_FLAGS and (agent != "claude" or nxt not in CLAUDE_EFFORTS):
+                raise Refused(f"effort flag not allowed in agent argv: {t} {nxt} (agent {agent})")
         elif low in FORBIDDEN_WORDS and prev not in MODEL_FLAGS:
             raise Refused(f"forbidden permission word in agent argv: {t}")
 

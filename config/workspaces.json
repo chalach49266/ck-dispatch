@@ -17,7 +17,26 @@
     "osascript": "/usr/bin/osascript",
     "start_timeout_s": 30,
     "early_exit_s": 20,
-    "poll_s": 1.0
+    "poll_s": 1.0,
+    "_note_v4": "v4 (2026-11-05): watchdog = stall watchdog while a live run waits (stall_s = the ask size's stall_s, else stall_s here); keep_awake = caffeinate while a live run waits; close_tab_after_s = close the tab of a cleanly finished run after that many seconds (0 = never).",
+    "watchdog": true,
+    "stall_s": 300,
+    "keep_awake": true,
+    "close_tab_after_s": 600
+  },
+  "post_review": {
+    "_note": "Read-only Claude review after cursor and agy auto runs (ckdispatch/postreview.py). OFF since 2026-11-05 (chalach: \"no need review, since those one are for simple stupid task anyways\"). The rule check still runs on every run.",
+    "enabled": false,
+    "timeout_s": 300
+  },
+  "asks": {
+    "_note": "v4 asks (ckdispatch/asks.py, BUILD_SPEC_v4 section 5). required: ck-run run/review need --ask. Budgets per size (the code defaults are the same): runs (incl. fixes), parallel (live at once), reviews (S: 1 only with trigger you-asked), fixes (runs with --parent in the same ask), wall_min, timeout_s (per run, when --timeout is not given), stall_s (watchdog).",
+    "required": true,
+    "budgets": {
+      "S": {"runs": 1, "parallel": 1, "reviews": 0, "fixes": 0, "wall_min": 15, "timeout_s": 600, "stall_s": 180},
+      "M": {"runs": 2, "parallel": 1, "reviews": 1, "fixes": 1, "wall_min": 45, "timeout_s": 1800, "stall_s": 300},
+      "L": {"runs": 6, "parallel": 3, "reviews": 2, "fixes": 2, "wall_min": 180, "timeout_s": 7200, "stall_s": 480}
+    }
   },
   "workspaces": {
     "devfab": {

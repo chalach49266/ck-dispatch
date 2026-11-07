@@ -80,6 +80,7 @@ class Config:
         except (OSError, ValueError) as e:
             raise Refused(f"cannot read config {path}: {e}")
         self.path = os.path.realpath(path)
+        self.raw = d  # the whole file, for keys without an attribute below (read only)
         self.is_default = self.path == os.path.realpath(DEFAULT_CONFIG)
         self.home = xp("~")
         self.real_home = os.path.realpath(self.home)
@@ -102,10 +103,23 @@ class Config:
         self.live_start_timeout_s = float(lv.get("start_timeout_s", 30))
         self.live_early_exit_s = float(lv.get("early_exit_s", 20))
         self.live_poll_s = float(lv.get("poll_s", 1.0))
-        # mandatory read-only Claude review after cursor/agy auto runs (postreview.py); optional config block
+        # v4 (2026-11-05, BUILD_SPEC_v4 10.5): the stall watchdog in live.wait_done (runner passes `watch` when on),
+        # stall_s when the run has no ask (an ask's size sets it), caffeinate while a live run waits, and closing
+        # the tab of a cleanly finished run after close_tab_after_s (0 = never)
+        self.live_watchdog = bool(lv.get("watchdog", True))
+        self.live_stall_s = float(lv.get("stall_s", 300))
+        self.live_keep_awake = bool(lv.get("keep_awake", True))
+        self.live_close_tab_after_s = float(lv.get("close_tab_after_s", 600))
+        # read-only Claude review after cursor/agy auto runs (postreview.py). v4: OFF unless post_review.enabled is
+        # true (chalach 2026-11-05: "no need review, since those one are for simple stupid task anyways")
         rv = d.get("post_review") or {}
+        self.post_review_enabled = bool(rv.get("enabled", False))
         self.review_timeout_s = float(rv.get("timeout_s", 300))
         self.review_model = rv.get("model") or None
+        # v4 asks (asks.py): required = run/review need --ask; budgets per size (code defaults in asks.DEFAULT_BUDGETS)
+        ak = d.get("asks") or {}
+        self.asks_required = bool(ak.get("required", False))
+        self.asks_budgets = {s: dict(v) for s, v in (ak.get("budgets") or {}).items() if isinstance(v, dict)}
         self.workspaces = {k: Workspace(k, v) for k, v in d["workspaces"].items()}
 
     def workspace(self, name: str) -> Workspace:

@@ -1,6 +1,15 @@
-"""One run: guards -> run dir -> agent with timeout -> parse -> rulecheck -> ledger -> summary on stdout."""
+"""One run: guards -> run dir -> agent with timeout -> parse -> rulecheck -> ledger -> summary on stdout.
+
+v4 (2026-11-05, BUILD_SPEC_v4): before the claims, the ask gate (asks.gate: budgets, review reasons, exit 7 over
+budget) and the andon (andon.check, when that module exists); the model comes from an alias or the tier
+(models.resolve); every event carries the ask id, size, pattern, tier and model alias; the post-run review of
+cursor/agy auto runs runs only when config post_review.enabled is true; the live watchdog may stop a stalled run
+(status timeout, exit 3); finalize_run() finishes a run whose ck-run watcher died (ck-run reattach)."""
 from __future__ import annotations
 
+import contextlib
+import fcntl
+import inspect
 import json
 import os
 import re
@@ -13,7 +22,7 @@ import time
 import uuid
 from datetime import datetime
 
-from . import VERSION, claims, ledger, live, postreview, route, rulecheck, summarize
+from . import VERSION, asks, claims, ledger, live, models, postreview, route, rulecheck, summarize
 from . import prompt as P
 from .config import CLAUDE_GUARD_BASE, PACKET_SCHEMA, REPO, RESULT_SCHEMA, Config, Workspace, inside
 from .errors import Refused
@@ -24,8 +33,13 @@ from .schema import validate
 
 RUN_ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{6}-[a-z0-9]+-[a-z0-9_]+-[a-z]+-[0-9a-f]{4}$")
 TASK_TYPE_RE = re.compile(r"^[a-z0-9_]{1,32}$")
-EXIT = {"ok": 0, "partial": 1, "refused": 2, "failed": 3, "timeout": 3, "flagged": 4, "violation": 5, "busy": 6}
+EXIT = {"ok": 0, "partial": 1, "refused": 2, "failed": 3, "timeout": 3, "flagged": 4, "violation": 5, "busy": 6,
+        "over_budget": 7}
 MAX_TASK_BYTES = 200_000
+# chalach 2026-11-05 (BUILD_SPEC_v4 decision 7), verbatim in every result note of a cursor/agy auto run
+POST_REVIEW_OFF = ('post-run review off (chalach 2026-11-05: "no need review, since those one are for simple '
+                   'stupid task anyways")')
+WINDOWS_DIR = ".windows"  # <runs_dir>/.windows/<ask>.json: the iTerm2 window of an ask (live.open_window, E2)
 
 
 class Spec:
@@ -52,6 +66,17 @@ class Spec:
         self.live = bool(kw.get("live"))  # agent in its own interactive CLI, in an iTerm2/Terminal window
         self.auto_readonly = None  # auto run with no write area (auto_readonly_reason), else None
         self.run_id = ""
+        # v4 (BUILD_SPEC_v4 5, 6): the ask, the review reason, chalach's --over words, the model request
+        self.ask_id = kw.get("ask_id")
+        self.trigger = kw.get("trigger")
+        self.over = kw.get("over")
+        self.model_req = kw.get("model")    # --model as given: an alias or a raw model id
+        self.tier_req = kw.get("tier")      # --tier as given
+        self.model_alias = self.tier = self.effort = None  # set by prepare_v4 (self.model = the resolved model id)
+        self.model_explicit, self.model_notes = bool(self.model_req), []
+        self.size = self.pattern = self.project = self.budget = None
+        self.stall_s = None
+        self.over_info = None
 
     @property
     def check_mode(self) -> str:
@@ -331,6 +356,49 @@ def _validate_read_dirs(cfg: Config, dirs: list) -> list:
     return list(dict.fromkeys(out))
 
 
+def prepare_v4(cfg: Config, spec: Spec) -> None:
+    """The ask and the model of a run (BUILD_SPEC_v4 5, 6). --ask: the ask must exist (asks.gate checks closed and
+    budgets later); its size, pattern, project and budget go on the spec. No --ask while config asks.required: refused
+    with the exact `ck-run ask open` line. The model: models.resolve (alias, raw id, or tiers[agent][tier] with the
+    tier from --tier / the ask). No --timeout: the ask size's timeout_s. Watchdog stall_s: the ask's, else
+    config live.stall_s."""
+    if spec.ask_id:
+        st = asks.need(cfg, spec.ask_id)
+        spec.ask_id = st["ask_id"]
+        spec.size, spec.pattern, spec.project, spec.budget = st["size"], st["pattern"], st["project"], st["budget"]
+    elif cfg.asks_required:
+        raise Refused(asks.required_message(spec))
+    res = models.resolve(spec.agent, spec.model_req, spec.tier_req, size=spec.size, pattern=spec.pattern)
+    if res["agent"] != spec.agent:
+        raise Refused(f"--model {spec.model_req} runs on {res['agent']}, not {spec.agent}")
+    spec.model, spec.model_alias, spec.tier, spec.effort = res["model"], res["alias"], res["tier"], res["effort"]
+    spec.model_explicit, spec.model_notes = res["explicit"], list(res["notes"])
+    if spec.timeout_s is None and spec.budget:
+        spec.timeout_s = min(int(spec.budget["timeout_s"]), cfg.max_timeout_s)
+    spec.stall_s = float(spec.budget["stall_s"]) if spec.budget else float(cfg.live_stall_s)
+
+
+def andon_check(cfg: Config, spec: Spec) -> None:
+    """BUILD_SPEC_v4 10.3: andon.check(cfg, project, workspace_key) raises Refused while an andon is raised for the
+    ask's project or the workspace. Skipped when ckdispatch/andon.py is not there; a broken andon module refuses
+    (a stop switch fails safe)."""
+    try:
+        from . import andon
+    except ImportError:
+        return
+    except Exception as e:
+        raise Refused(f"the andon check could not load ({type(e).__name__}: {e}); fix ckdispatch/andon.py")
+    check = getattr(andon, "check", None)
+    if not callable(check):
+        return
+    try:
+        check(cfg, spec.project, spec.ws.key)
+    except Refused:
+        raise
+    except Exception as e:
+        raise Refused(f"the andon check failed ({type(e).__name__}: {e})")
+
+
 def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
     ws = spec.ws
     make_id = lambda: new_run_id(ws.key, spec.task_type, spec.agent)  # noqa: E731
@@ -347,13 +415,17 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
         "prompt_live": "prompt-live.md", "settings_live": "claude-settings-live.json", "live_sh": "live.sh"}.items()}
     base = {"run_id": spec.run_id, "parent_run_id": spec.parent_run_id, "title": spec.title,
             "workspace": ws.key, "task_type": spec.task_type, "agent": spec.agent, "model": spec.model,
-            "mode": spec.mode, "approved": spec.approved, "via": "CK" if spec.kind == "review" else None}
+            "mode": spec.mode, "approved": spec.approved, "via": "CK" if spec.kind == "review" else None,
+            "ask_id": spec.ask_id, "trigger": spec.trigger}
     claim_paths = []
     try:
         if spec.agent not in AGENTS:
             raise Refused(f"unknown agent '{spec.agent}'")
         if not TASK_TYPE_RE.match(spec.task_type):
             raise Refused("task type must match [a-z0-9_]{1,32}")
+        prepare_v4(cfg, spec)
+        base.update(ask_id=spec.ask_id, size=spec.size, pattern=spec.pattern, tier=spec.tier, project=spec.project,
+                    model=spec.model, model_alias=spec.model_alias)
         if spec.timeout_s is None:
             spec.timeout_s = cfg.default_timeout_s
         if not (1 <= int(spec.timeout_s) <= cfg.max_timeout_s):
@@ -395,14 +467,14 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
         ro = bool(spec.auto_readonly)
         cmd = build(cfg, ws, spec.agent, mode=spec.mode, scopes=scopes, model=spec.model, run_dir=run_dir,
                     schema_path=RESULT_SCHEMA, extra_read_dirs=read_dirs, timeout_s=int(spec.timeout_s),
-                    claude_settings_path=paths["settings"], readonly=ro)
+                    claude_settings_path=paths["settings"], readonly=ro, effort=spec.effort)
         lv = None
         if spec.live:
             sid = str(uuid.uuid4()) if spec.agent == "claude" else None
             lv = {"session_id": sid, "cmd": build_live(
                 cfg, ws, spec.agent, mode=spec.mode, scopes=scopes, model=spec.model, run_dir=run_dir,
                 extra_read_dirs=read_dirs, claude_settings_path=paths["settings_live"], session_id=sid,
-                readonly=ro)}
+                readonly=ro, effort=spec.effort)}
     except Refused as e:
         if reserved:
             _unreserve(run_dir)
@@ -415,21 +487,48 @@ def execute(cfg: Config, spec: Spec, dry_run: bool = False) -> int:
         print(f"ck-run: NOTE ({spec.agent}): {auto_readonly_note(ws)}.", file=sys.stderr)
         sys.stderr.flush()
 
-    # No workspace lock (chalach 2026-11-03): any number of runs, any agents, same or other workspaces. Only a
-    # --claim that overlaps a live run's claim is refused (claims.py). Every run is registered, claims or not.
+    # v4: the ask gate (budgets, review reasons; exit 7 over budget) and the andon, before the claims. With an ask,
+    # gate + claims run under <runs_dir>/.asks.lock, so two runs of one ask cannot both take its last slot.
     held = None
+    who = {"from": spec.from_, "to": spec.agent}
     if dry_run:
+        try:
+            spec.over_info = asks.gate(cfg, spec, base=dict(base, **who), dry_run=True)
+            andon_check(cfg, spec)
+        except asks.OverBudget as e:
+            print(f"ck-run: OVER BUDGET: {e}", file=sys.stderr)
+            return EXIT["over_budget"]
+        except Refused as e:
+            print(f"ck-run: REFUSED: {e}", file=sys.stderr)
+            return EXIT["refused"]
         others_live, _ = claims.active(cfg.runs_dir)
     else:
-        try:
-            got = claims.acquire(cfg.runs_dir, {
-                "run_id": spec.run_id, "agent": spec.agent, "workspace": ws.key, "mode": spec.mode, "kind": spec.kind,
-                "title": spec.title, "task_type": spec.task_type, "claims": claim_paths,
-                "claims_auto": spec.auto_claims, "write_scope": [s["path"] for s in scopes], "run_dir": run_dir,
-                "auto_readonly": spec.auto_readonly})
-        except BaseException:
-            _unreserve(run_dir)
-            raise
+        with (asks.lock(cfg) if spec.ask_id else contextlib.nullcontext()):
+            try:
+                spec.over_info = asks.gate(cfg, spec, base=dict(base, **who))
+                andon_check(cfg, spec)
+            except asks.OverBudget as e:  # asks.gate wrote the over_budget event
+                _unreserve(run_dir)
+                print(f"ck-run: OVER BUDGET: {e}", file=sys.stderr)
+                return EXIT["over_budget"]
+            except Refused as e:
+                _unreserve(run_dir)
+                ledger.append(cfg.runs_dir, **base, event="refused", status="refused", note=str(e)[:1000], **who)
+                print(f"ck-run: REFUSED: {e}", file=sys.stderr)
+                return EXIT["refused"]
+            # No workspace lock (chalach 2026-11-03): any number of runs, any agents, same or other workspaces. Only
+            # a --claim that overlaps a live run's claim is refused (claims.py). Every run is registered, claims or not.
+            try:
+                got = claims.acquire(cfg.runs_dir, {
+                    "run_id": spec.run_id, "agent": spec.agent, "workspace": ws.key, "mode": spec.mode,
+                    "kind": spec.kind, "title": spec.title, "task_type": spec.task_type, "claims": claim_paths,
+                    "claims_auto": spec.auto_claims, "write_scope": [s["path"] for s in scopes], "run_dir": run_dir,
+                    "auto_readonly": spec.auto_readonly, "parent_run_id": spec.parent_run_id,
+                    "ask_id": spec.ask_id, "size": spec.size, "pattern": spec.pattern, "project": spec.project,
+                    "model": spec.model, "model_alias": spec.model_alias, "tier": spec.tier})
+            except BaseException:
+                _unreserve(run_dir)
+                raise
         claims.log_stale(cfg.runs_dir, got["stale"], by=f"run {spec.run_id}")
         if not got["ok"]:
             _unreserve(run_dir)
@@ -455,7 +554,7 @@ def _prepare_and_run(cfg, spec, ws, scopes, cmd, lv, run_dir, paths, base, claim
     other_claims = [(c, r) for r in others_live for c in r.get("claims") or []]
     head = P.header(ws=ws, run_id=spec.run_id, agent=spec.agent, kind=spec.kind, mode=spec.mode,
                     approved=spec.approved, scopes=scopes, claims=claim_paths, other_claims=other_claims,
-                    auto_readonly=spec.auto_readonly)
+                    auto_readonly=spec.auto_readonly, post_review=cfg.post_review_enabled)
     foot = P.footer(run_id=spec.run_id, include_schema=not SCHEMA_ENFORCED_BY_FLAG[spec.agent], schema_path=RESULT_SCHEMA)
     prompt_text = P.assemble(head, spec.title, spec.task_text, foot)
     env = child_env(cfg)
@@ -467,12 +566,20 @@ def _prepare_and_run(cfg, spec, ws, scopes, cmd, lv, run_dir, paths, base, claim
         f"# prompt: {paths['prompt']} ({'stdin' if cmd.stdin_prompt else 'last argument'})",
         f"# config: {cfg.path}",
         redacted(cmd, RESULT_SCHEMA, paths["prompt"]),
-        web_line(spec.agent)]
+        web_line(spec.agent),
+        model_line(spec)]
+    if spec.ask_id:
+        lines.append(f"# ask: {spec.ask_id} (size {spec.size}, pattern {spec.pattern}"
+                     + (f", project {spec.project}" if spec.project else "")
+                     + (f", review reason {spec.trigger}" if spec.trigger else "") + ")"
+                     + (f"; over budget, passed with chalach's words: \"{spec.over_info['approved']}\""
+                        if (spec.over_info or {}).get("over") else ""))
     if lv:
         lv["prompt"] = P.assemble(
             P.header(ws=ws, run_id=spec.run_id, agent=spec.agent, kind=spec.kind, mode=spec.mode,
                      approved=spec.approved, scopes=scopes, live_outbox=run_dir, claims=claim_paths,
-                     other_claims=other_claims, auto_readonly=spec.auto_readonly),
+                     other_claims=other_claims, auto_readonly=spec.auto_readonly,
+                     post_review=cfg.post_review_enabled),
             spec.title, spec.task_text,
             P.footer(run_id=spec.run_id, include_schema=True, schema_path=RESULT_SCHEMA, live_outbox=run_dir))
         lines += [f"# live (default; --no-live for headless only): an {cfg.live_terminal} window runs {paths['live_sh']},",
@@ -485,11 +592,14 @@ def _prepare_and_run(cfg, spec, ws, scopes, cmd, lv, run_dir, paths, base, claim
                   + {"claude": "; Claude settings deny edits in the whole workspace",
                      "codex": "; codex sandbox -s read-only (approvals still go to auto_review)"}.get(spec.agent, "")
                   + "; any change in the workspace is a rule-check violation"]
-    if postreview.applies(spec.agent, spec.mode, spec.kind):
+    if postreview.applies(spec.agent, spec.mode, spec.kind) and cfg.post_review_enabled:
         lines += [f"# after the run: MANDATORY read-only Claude review ({spec.agent} auto = "
-                  f"{'--force, allow-all' if spec.agent == 'cursor' else '--mode auto + workspace/run --add-dir'}; chalach 2026-11-03):",
+                  f"{'--force, allow-all' if spec.agent == 'cursor' else '--mode auto + workspace/run --add-dir'}; "
+                  f"chalach 2026-11-03; on while config post_review.enabled is true):",
                   f"# claude -p --permission-mode plan --json-schema schema/review.schema.json over {run_dir}/review-input.md"
                   f" -> {run_dir}/review.md, ledger event {postreview.event_name(spec.agent)} ok|flagged"]
+    elif postreview.applies(spec.agent, spec.mode, spec.kind):
+        lines += [f"# after the run: {POST_REVIEW_OFF}; the rule check still runs"]
     lines.append(f"# claims (no workspace lock; only overlapping claims are refused): "
                  + (", ".join(claim_paths) or "none")
                  + (f"; claimed automatically (--write-scope): {', '.join(spec.auto_claims)}" if spec.auto_claims else "")
@@ -502,6 +612,22 @@ def _prepare_and_run(cfg, spec, ws, scopes, cmd, lv, run_dir, paths, base, claim
         return 0
     return _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, paths, base, lv,
                            claim_paths=claim_paths, other_claims=[c for c, _ in other_claims], held=held)
+
+
+def model_line(spec: Spec) -> str:
+    """cmd.txt / --dry-run: the model ck-run chose and why (models.resolve)."""
+    if spec.model_explicit:
+        how = "named with --model"
+    elif spec.tier_req:
+        how = f"tier {spec.tier} (--tier)"
+    elif spec.pattern == "race":
+        how = f"tier {spec.tier} (race ask)"
+    else:
+        how = f"tier {spec.tier} ({'ask size ' + spec.size if spec.size else 'default'})"
+    eff = f", effort {spec.effort}" if spec.effort else ", no effort flag"
+    name = f"{spec.model_alias} = " if spec.model_alias else ""
+    return (f"# model: {name}{spec.model or spec.agent + ' default'}{eff} ({how})"
+            + "".join(f"; {n}" for n in spec.model_notes))
 
 
 def _write_replace(path: str, text: str) -> None:
@@ -539,9 +665,14 @@ def _live_phase(cfg, spec, ws, run_dir, paths, lv, env, base=None):
         if new_file:
             time.sleep(1.5)  # iTerm2 loads a new dynamic-profile file within about a second
     t0 = time.time()
+    # v4 (BUILD_SPEC_v4 10.5): one iTerm2 window per ask, one tab per run, when live.open_window takes group/state_dir
+    group_kw = {}
+    if spec.ask_id and _accepts(live.open_window, "group", "state_dir"):
+        group_kw = {"group": spec.ask_id, "state_dir": os.path.join(cfg.runs_dir, WINDOWS_DIR)}
     win = live.open_window(cfg.live_osascript, f"/bin/bash {shlex.quote(paths['live_sh'])}", title, env,
-                           terminal=cfg.live_terminal, profile=profile)
-    info["window"] = {"terminal": win["terminal"], "window_id": win["window_id"], "how": win["how"], "title": title}
+                           terminal=cfg.live_terminal, profile=profile, **group_kw)
+    info["window"] = {"terminal": win["terminal"], "window_id": win["window_id"], "how": win["how"], "title": title,
+                      "session_id": win.get("session_id"), "tab": win.get("tab")}
     if not win["ok"]:
         live.take_claim(run_dir)  # a window that opens anyway later finds the claim and does nothing
         _live_fallback(cfg, spec, base, info, f"osascript could not open a window: {win['error']}")
@@ -549,7 +680,8 @@ def _live_phase(cfg, spec, ws, run_dir, paths, lv, env, base=None):
     locked = bool(profile) and (win["how"] or "").startswith("profile ")
     ledger.append(cfg.runs_dir, **base, event="live_window_opened", status="dispatched",
                   note=(f"window_id={win['window_id'] or 'unknown'}; terminal={win['terminal']}; {win['how']}; "
-                        f"title locked: {'yes' if locked else 'no'}; title: {title}")[:1000],
+                        + (f"a new tab in the window of ask {spec.ask_id}; " if win.get("tab") else "")
+                        + f"title locked: {'yes' if locked else 'no'}; title: {title}")[:1000],
                   **{"from": "CK", "to": spec.agent})
     if not live.wait_started(run_dir, cfg.live_start_timeout_s, min(cfg.live_poll_s, 0.5)):
         tail = live.window_tail(cfg.live_osascript, win["window_id"], env) if win["terminal"] == "iTerm2" else None
@@ -558,15 +690,30 @@ def _live_phase(cfg, spec, ws, run_dir, paths, lv, env, base=None):
                        f"within {cfg.live_start_timeout_s:g} s" + (f"; the window shows: {tail}" if tail else ""))
         return info, None
     info["used"] = True
+    # v4 (BUILD_SPEC_v4 10.5): the stall watchdog, when live.wait_done takes `watch` and config live.watchdog is on
+    wait_kw = {}
+    if cfg.live_watchdog and _accepts(live.wait_done, "watch"):
+        wait_kw["watch"] = {
+            "stall_s": float(spec.stall_s or cfg.live_stall_s), "osascript": cfg.live_osascript,
+            "window_id": win["window_id"], "terminal": win["terminal"], "env": env, "runs_dir": cfg.runs_dir,
+            "run_id": spec.run_id, "ask_id": spec.ask_id, "agent": spec.agent, "title": spec.title,
+            # optional keys live.wait_done / watchdog.py read: the tab, HOME for the session stores, config values
+            "session_id": win.get("session_id"), "home": cfg.home,
+            "keep_awake": cfg.live_keep_awake, "close_tab_after_s": cfg.live_close_tab_after_s}
     old = signal.signal(signal.SIGTERM, _on_sigterm)
     try:
-        w = live.wait_done(run_dir, t0 + int(spec.timeout_s), cfg.live_poll_s)
+        w = live.wait_done(run_dir, t0 + int(spec.timeout_s), cfg.live_poll_s, **wait_kw)
     except KeyboardInterrupt:
         w = {"state": "interrupted", "exit_code": None}
     finally:
         signal.signal(signal.SIGTERM, old)
-    if w["state"] in ("timeout", "interrupted"):
-        info["stop"] = live.stop(run_dir)
+    if w["state"] in ("timeout", "interrupted", "stalled"):
+        info["stop"] = live.stop(run_dir)  # the watchdog stops a stalled run itself; a second stop is harmless
+    if w["state"] == "stalled":
+        idle = w.get("idle_s") or w.get("stalled_s") or 2 * float(spec.stall_s or cfg.live_stall_s)
+        info["watchdog_note"] = f"stopped by the watchdog: no activity for {float(idle):.0f} s"
+    if w.get("watchdog") is not None:
+        info["watchdog"] = w["watchdog"]  # what the watchdog saw and did (live.wait_done)
     info["state"] = w["state"]
     result_text = _read_text(paths["result_md"])
     if (w["state"] == "exited" and w["exit_code"] not in (None, 0, 130) and not result_text
@@ -592,10 +739,22 @@ def _live_phase(cfg, spec, ws, run_dir, paths, lv, env, base=None):
     parsed = {"final_text": final_text, "structured": structured, "actions": [], "observed_reads": [],
               "session_id": sess["id"], "cost_usd": None, "agent_error": None, "finished_reason": None,
               "text_only": True}
-    info["exit_code"] = w["exit_code"]
+    info["exit_code"] = w.get("exit_code")
     # Once summary.md is written the work is done; how the user later leaves the CLI (Ctrl+C = 130) does not count.
-    code = None if w["state"] == "done" else w["exit_code"]
-    return info, (code, w["state"] == "timeout", w["state"] == "interrupted", parsed)
+    code = None if w["state"] == "done" else w.get("exit_code")
+    # a stalled run (watchdog) ends like a timeout: status timeout, exit 3
+    return info, (code, w["state"] in ("timeout", "stalled"), w["state"] == "interrupted", parsed)
+
+
+def _accepts(fn, *names) -> bool:
+    """True if `fn` takes all these keyword arguments (E2 adds them to live.py in v4; older live.py does not)."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    if any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        return True
+    return all(n in params for n in names)
 
 
 def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_dir, paths, base, lv=None, *,
@@ -639,7 +798,9 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
                       if lv else None] if n) or None,
                   **{"from": spec.from_, "to": spec.agent})
 
-    reviewed = postreview.applies(spec.agent, spec.mode, spec.kind)
+    # v4 (chalach 2026-11-05, decision 7): the post-run review of cursor/agy auto runs only when post_review.enabled
+    review_on = postreview.applies(spec.agent, spec.mode, spec.kind)
+    reviewed = review_on and cfg.post_review_enabled
     roots = rulecheck.scan_roots(ws, scopes)
     try:
         snap = postreview.before(cfg, ws, scopes, roots) if reviewed else None
@@ -659,13 +820,26 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
     else:
         exit_code, timed_out, interrupted, parsed = outcome
         stdout, stderr = parsed["final_text"], ""  # text only: the rule check scans the agent's result text
+    return _finish(cfg, spec, ws, scopes, run_dir, paths, base, started=started, t0=t0, marker_ns=marker_ns,
+                   roots=roots, snap=snap, reviewed=reviewed, review_off=review_on and not reviewed,
+                   exit_code=exit_code, timed_out=timed_out, interrupted=interrupted, parsed=parsed, stdout=stdout,
+                   stderr=stderr, live_info=live_info, claim_paths=claim_paths)
+
+
+def _finish(cfg, spec, ws, scopes, run_dir, paths, base, *, started, t0, marker_ns, roots, snap, reviewed,
+            review_off, exit_code, timed_out, interrupted, parsed, stdout, stderr, live_info, claim_paths,
+            end_ts=None, finalized=None, extra_notes=()) -> int:
+    """After the agent: the rule check (and the post-run review when it is on), the status, result.json, result.md,
+    summary.md, the ledger `result` event and the summary on stdout; returns the exit code. finalize_run uses it too:
+    end_ts = when the agent's last output was written, finalized = its note."""
     is_live = bool(live_info and live_info["used"])
-    duration = round(time.time() - t0, 1)
-    finished = ledger.now_iso()
+    end = end_ts or time.time()
+    duration = round(end - t0, 1)
+    finished = datetime.fromtimestamp(end).astimezone().isoformat(timespec="seconds") if end_ts else ledger.now_iso()
 
     scan = rulecheck.scan_changed(roots, marker_ns, cfg.scan_budget_s, cfg.scan_max_entries)
     # Other runs may have worked at the same time (no workspace lock): split the scan's changes between them.
-    others = claims.concurrent(cfg, spec.run_id, marker_ns / 1e9, time.time())
+    others = claims.concurrent(cfg, spec.run_id, marker_ns / 1e9, end_ts or time.time())
     att = claims.attribute(cfg, ws, spec.check_mode, scopes, list(claim_paths), scan["changed"], others)
     cls = rulecheck.classify(cfg, ws, spec.check_mode, scopes, att["mine"], run_dir, auto_readonly=spec.auto_readonly)
     tr = rulecheck.scan_transcript(parsed, stdout, stderr, agent=spec.agent, mode=spec.mode)
@@ -723,6 +897,9 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
 
     structured = parsed["structured"] if isinstance(parsed["structured"], dict) else None
     schema_errors = validate(structured, load_schema(RESULT_SCHEMA)) if structured else ["no result JSON found"]
+    v4_missing = []
+    if structured:  # v4 (2026-11-05): a result without the new fields still counts; the finish card shows less
+        schema_errors, v4_missing = summarize.split_v4_errors(schema_errors)
     agent_summary = (live_info or {}).get("summary_text", "").strip() if is_live else ""
     if agent_summary:  # live: the agent wrote summary.md itself
         lines, src, sum_note = summarize.summary_lines({"summary": agent_summary}, "", paths["result_md"])
@@ -730,8 +907,13 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
         lines, src, sum_note = summarize.summary_lines(structured, parsed["final_text"], paths["result_md"])
     if review and review["status"] == "flagged":  # CK reads summary.md first: the warning goes on top
         lines = [f"FLAGGED by the post-run Claude review: {postreview.headline(review)[:120]} (review.md)"] + lines[:9]
-    notes = [n for n in [f"auto_readonly: {spec.auto_readonly} (auto mode, no write area)" if spec.auto_readonly
+    notes = [n for n in [f"finalized by ck-run reattach: {finalized}" if finalized is not None else None,
+                         f"auto_readonly: {spec.auto_readonly} (auto mode, no write area)" if spec.auto_readonly
                          else None, sum_note] if n]
+    if (spec.over_info or {}).get("over"):
+        notes.append(f"over the ask's budget ({'; '.join(spec.over_info.get('reasons') or [])}), passed with "
+                     f"chalach's words: \"{spec.over_info.get('approved')}\"")
+    notes += list(spec.model_notes or [])
     if live_info and not is_live:
         notes.append(f"live window not used ({live_info['window_error']}); ran headless")
     if is_live:
@@ -741,8 +923,15 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
             notes.append("result recovered from the session log: the agent did not write it to result.md")
         if live_info.get("recover_skipped"):
             notes.append(f"result not recovered from the session log: {live_info['recover_skipped']}")
-        if not agent_summary and live_info["state"] != "timeout":
+        if live_info.get("watchdog_note"):
+            notes.append(live_info["watchdog_note"])
+        if not agent_summary and live_info["state"] not in ("timeout", "stalled"):
             notes.append("the agent did not write summary.md")
+    if review_off:
+        notes.append(POST_REVIEW_OFF)
+    notes += list(extra_notes)
+    if v4_missing:
+        notes.append(f"the result has no v4 field(s) {', '.join(v4_missing)}: the finish card shows less for this run")
     reported = [_norm(f, ws.root) for f in (structured or {}).get("files_read") or [] if isinstance(f, str)]
     observed = [_norm(f, ws.root) for f in parsed["observed_reads"]]
     files_read = list(dict.fromkeys(reported + observed))
@@ -805,6 +994,11 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
     rec = {
         "run_id": spec.run_id, "kind": spec.kind, "parent_run_id": spec.parent_run_id, "title": spec.title,
         "agent": spec.agent, "model": spec.model, "workspace": ws.key, "mode": spec.mode,
+        "ask_id": spec.ask_id, "size": spec.size, "pattern": spec.pattern, "project": spec.project,
+        "tier": spec.tier, "model_alias": spec.model_alias, "effort": spec.effort, "trigger": spec.trigger,
+        "over_budget": spec.over_info if (spec.over_info or {}).get("over") else None,
+        "v4": summarize.v4_fields(structured), "v4_missing": v4_missing,
+        "post_review_off": bool(review_off), "finalized": finalized,
         "auto_readonly": spec.auto_readonly, "status": status, "agent_status": agent_status, "exit_code": exit_code, "timed_out": timed_out,
         "summary_lines": lines, "summary_source": src, "notes": notes, "schema_errors": schema_errors[:20],
         "agent_result": structured, "final_text": None if structured else parsed["final_text"][:20000],
@@ -831,7 +1025,8 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
         if _read_text(paths["summary"], 200_000) != summary_text:
             _write_replace(paths["summary"], summary_text)
     else:
-        put = _write_replace if live_info else _write  # after a failed window, a stray file may exist
+        # after a failed window, or when finalizing a run whose ck-run died, a stray file may exist
+        put = _write_replace if (live_info or finalized is not None) else _write
         put(paths["result_json"], json.dumps(rec, indent=2, ensure_ascii=False, default=str))
         put(paths["result_md"], summarize.render_result_md(rec))
         put(paths["rulecheck"], json.dumps(rc, indent=2, ensure_ascii=False))
@@ -854,8 +1049,12 @@ def _run_registered(cfg, spec, ws, scopes, cmd, prompt_text, env, cmd_txt, run_d
     return EXIT[status]
 
 
-def review_spec(cfg: Config, orig_run_id: str, by: str, *, blind: bool, focus: str | None,
-                title: str | None, model: str | None, timeout_s: int | None, live: bool = False) -> Spec:
+def review_spec(cfg: Config, orig_run_id: str, by: str | None, *, blind: bool, focus: str | None,
+                title: str | None, model: str | None, timeout_s: int | None, live: bool = False,
+                ask_id: str | None = None, trigger: str | None = None, tier: str | None = None,
+                over: str | None = None) -> Spec:
+    """v4: --by may be left out when --model is an alias (the alias picks the agent); without --ask the review
+    belongs to the ask of the reviewed run; --trigger is the review reason (asks.gate checks it)."""
     if not valid_run_id(orig_run_id):
         raise Refused(f"not a valid run id: {orig_run_id}")
     r = ledger.find_run(cfg.runs_dir, orig_run_id)
@@ -866,8 +1065,11 @@ def review_spec(cfg: Config, orig_run_id: str, by: str, *, blind: bool, focus: s
         raise Refused(f"run {orig_run_id} has no result yet")
     op = r.opening
     orig_agent = op.get("agent") or op.get("to")
+    if by is None:
+        by = models.agent_for(model)  # Refused unless --model is an alias
     if by == orig_agent:
         raise Refused(f"cross-review needs a different agent than {orig_agent}")
+    ask_id = ask_id or op.get("ask_id")
     run_dir = os.path.join(cfg.runs_dir, orig_run_id)
     orig = {"run_id": orig_run_id, "agent": orig_agent, "title": op.get("title") or "",
             "task_path": os.path.join(run_dir, "task.md"), "result_md": os.path.join(run_dir, "result.md"),
@@ -882,4 +1084,180 @@ def review_spec(cfg: Config, orig_run_id: str, by: str, *, blind: bool, focus: s
     return Spec(agent=by, ws=ws, title=title or default_title, task_text=task_text, task_source=None,
                 task_type=op.get("task_type") or "general", model=model, mode="read", timeout_s=timeout_s,
                 parent_run_id=orig_run_id, kind="review", from_=orig_agent, review=orig,
-                read_dirs=[] if blind else [run_dir], live=live)
+                read_dirs=[] if blind else [run_dir], live=live, ask_id=ask_id, trigger=trigger, tier=tier,
+                over=over)
+
+
+# ---- v4: finish a run whose ck-run watcher died (BUILD_SPEC_v4 10.6; `ck-run reattach` calls it) ---------------
+
+SESSION_ID_RX = re.compile(r"--session-id['\"]?\s+['\"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
+
+
+def _pid_alive(pid) -> bool:
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _read_int_file(path: str):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _iso_ts(text):
+    try:
+        return datetime.fromisoformat(str(text)).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def print_result(res: dict) -> int:
+    """Print a result event's summary path and summary (like a finished run) and return its exit code."""
+    p = res.get("summary_path")
+    lines = _read_text(p, 200_000).splitlines()[:10] if p else []
+    sys.stdout.write((p or "(no summary.md)") + "\n" + "\n".join(lines) + "\n")
+    sys.stdout.flush()
+    return EXIT.get(res.get("status"), EXIT["failed"])
+
+
+def finalize_run(cfg: Config, run_id: str, *, note: str) -> int:
+    """Finish a run whose ck-run watcher died, from what is on disk: packet.json, the agent's result.md / summary.md
+    (live) or stdout.log (headless), the agent session (live.find_session); the normal rule check (the post-run review
+    is not run), the `result` event (note "finalized by ck-run reattach: <note>"), the summary on stdout; returns the
+    exit code. Idempotent: a run that has a result event prints it and returns its code. Refused while the agent (or
+    the ck-run that watches it) still runs: "agent still running"."""
+    if not valid_run_id(run_id):
+        raise Refused(f"not a valid run id: {run_id}")
+    run_dir = os.path.join(cfg.runs_dir, run_id)
+    if not os.path.isdir(run_dir):
+        raise Refused(f"run {run_id} has no run folder")
+    fd = os.open(os.path.join(run_dir, ".finalize.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)  # two reattach calls at once: the second one prints the first one's result
+        r = ledger.find_run(cfg.runs_dir, run_id)
+        if r is None:
+            raise Refused(f"run {run_id} is not in the ledger")
+        res = r.last("result")
+        if res is not None:
+            return print_result(res)
+        op = r.first("dispatch", "review")
+        if op is None:
+            raise Refused(f"run {run_id} never started (no dispatch or review event)")
+        live_records, _ = claims.active(cfg.runs_dir)
+        rec = next((x for x in live_records if x.get("run_id") == run_id), None)
+        if rec is not None and rec.get("orphan"):
+            raise Refused(f"agent still running (pid {rec.get('agent_pid')}); finalize the run after it ends")
+        if rec is not None:
+            raise Refused(f"agent still running: its ck-run (pid {rec.get('pid')}) still watches run {run_id}")
+        if (not os.path.exists(os.path.join(run_dir, "live.exit"))
+                and _pid_alive(_read_int_file(os.path.join(run_dir, "live.pid")))):
+            raise Refused(f"agent still running (live window, pid {_read_int_file(os.path.join(run_dir, 'live.pid'))})")
+        return _finalize(cfg, r, op, run_dir, note)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _finalize(cfg: Config, r, op: dict, run_dir: str, note: str) -> int:
+    run_id = r.run_id
+    paths = {k: os.path.join(run_dir, v) for k, v in {
+        "prompt": "prompt.md", "task": "task.md", "result_md": "result.md", "result_json": "result.json",
+        "summary": "summary.md", "settings": "claude-settings.json", "packet": "packet.json",
+        "cmd": "cmd.txt", "rulecheck": "rulecheck.json", "marker": ".marker",
+        "prompt_live": "prompt-live.md", "settings_live": "claude-settings-live.json", "live_sh": "live.sh"}.items()}
+    try:
+        with open(paths["packet"], encoding="utf-8") as f:
+            packet = json.load(f)
+    except (OSError, ValueError) as e:
+        raise Refused(f"run {run_id}: cannot read packet.json ({e})")
+    ws = cfg.workspace(op.get("workspace") or packet.get("workspace") or "")
+    mode = {"plan": "read", "edit-approved": "edit", "auto": "auto"}.get(packet.get("mode"), op.get("mode") or "read")
+    kind = packet.get("kind") or ("review" if op.get("event") == "review" else "dispatch")
+    spec = Spec(agent=op.get("agent") or packet.get("worker"), ws=ws, title=op.get("title") or packet.get("title") or "",
+                task_text=_read_text(paths["task"]), task_source=packet.get("task_source"),
+                task_type=op.get("task_type") or packet.get("task_type") or "general", mode=mode,
+                approved=op.get("approved"), timeout_s=(packet.get("budget") or {}).get("timeout_s"),
+                parent_run_id=op.get("parent_run_id"), kind=kind, from_=op.get("from") or "CK",
+                review=packet.get("review"), ask_id=op.get("ask_id"), trigger=op.get("trigger"))
+    spec.run_id = run_id
+    spec.auto_readonly = packet.get("auto_readonly") or op.get("auto_readonly")
+    spec.model, spec.model_alias, spec.tier = op.get("model") or packet.get("model"), op.get("model_alias"), op.get("tier")
+    spec.size, spec.pattern, spec.project = op.get("size"), op.get("pattern"), op.get("project")
+    spec.model_explicit = False
+    scopes = [{"path": p, "literal": p, "area": "workspace" if inside(p, ws.real_root) else "local"}
+              for p in packet.get("write_scope") or []]
+    claim_paths = list(packet.get("claims") or op.get("claims") or [])
+    base = {"run_id": run_id, "parent_run_id": spec.parent_run_id, "title": spec.title, "workspace": ws.key,
+            "task_type": spec.task_type, "agent": spec.agent, "model": spec.model, "mode": spec.mode,
+            "approved": spec.approved, "via": "CK" if kind == "review" else None, "ask_id": spec.ask_id,
+            "trigger": spec.trigger, "size": spec.size, "pattern": spec.pattern, "tier": spec.tier,
+            "project": spec.project, "model_alias": spec.model_alias, "claims": claim_paths,
+            "auto_readonly": spec.auto_readonly}
+    started = op.get("started_at") or packet.get("created_at") or op.get("ts")
+    try:
+        marker_ns = os.stat(paths["marker"]).st_mtime_ns
+    except OSError:
+        marker_ns = int((_iso_ts(started) or time.time()) * 1e9)
+    t0 = _iso_ts(started) or marker_ns / 1e9
+    outputs = [paths["summary"], paths["result_md"], os.path.join(run_dir, "live.exit"),
+               os.path.join(run_dir, "stdout.log"), os.path.join(run_dir, "last.md")]
+    stamps = [os.stat(x).st_mtime for x in outputs if os.path.exists(x)]
+    end_ts = max(stamps) if stamps else time.time()
+    is_live = os.path.exists(os.path.join(run_dir, "live.pid")) and r.last("live_fallback") is None
+    extra = ["the post-run review was not run (finalized after ck-run's watcher died)"
+             if postreview.applies(spec.agent, spec.mode, spec.kind) and cfg.post_review_enabled else None]
+    if is_live:
+        result_text = _read_text(paths["result_md"])
+        summary_text = _read_text(paths["summary"], 200_000)
+        exit_code = _read_int_file(os.path.join(run_dir, "live.exit"))
+        m = SESSION_ID_RX.search(_read_text(paths["live_sh"]) + "\n" + _read_text(paths["cmd"]))
+        sess = live.find_session(spec.agent, cfg.home, t0 - 5, run_id, known_id=m.group(1) if m else None)
+        structured = summarize.extract_structured(result_text)
+        if not (isinstance(structured, dict) and "summary" in structured):
+            structured = None
+        final_text, recovered, skipped = result_text, False, None
+        if structured is None and sess["sure"]:
+            got, text = live.recover_result(sess["path"], run_id)
+            if got is not None:
+                structured, final_text, recovered = got, text, True
+        elif structured is None and sess["path"]:
+            skipped = f"session {sess['id']} is not confirmed as this run's ({sess['how']})"
+        state = "done" if summary_text.strip() else "exited"
+        live_info = {"requested": True, "used": True, "window_error": None, "state": state,
+                     "session_id": sess["id"], "session_path": sess["path"], "session_how": sess["how"],
+                     "session_sure": sess["sure"], "recovered_from_session": recovered, "recover_skipped": skipped,
+                     "summary_text": summary_text, "window": None, "exit_code": exit_code}
+        parsed = {"final_text": final_text, "structured": structured, "actions": [], "observed_reads": [],
+                  "session_id": sess["id"], "cost_usd": None, "agent_error": None, "finished_reason": None,
+                  "text_only": True}
+        code = None if state == "done" else exit_code
+        stdout, stderr = final_text, ""
+    else:
+        parsed = summarize.parse(spec.agent, run_dir)
+        stdout = _read_text(os.path.join(run_dir, "stdout.log"))
+        stderr = _read_text(os.path.join(run_dir, "stderr.log"), 200_000)
+        live_info, code = None, None  # the headless agent's exit code died with its ck-run
+        extra.append("headless run: the agent's exit code is unknown (its ck-run died)")
+    rc = _finish(cfg, spec, ws, scopes, run_dir, paths, base, started=started, t0=t0, marker_ns=marker_ns,
+                 roots=rulecheck.scan_roots(ws, scopes), snap=None, reviewed=False,
+                 review_off=postreview.applies(spec.agent, spec.mode, spec.kind) and not cfg.post_review_enabled,
+                 exit_code=code, timed_out=False, interrupted=False, parsed=parsed, stdout=stdout, stderr=stderr,
+                 live_info=live_info, claim_paths=claim_paths, end_ts=end_ts, finalized=(note or "").strip(),
+                 extra_notes=[x for x in extra if x])
+    # this run's registry record is stale now: remove it quietly (its result is logged); log the others' as usual
+    _, stale = claims.active(cfg.runs_dir, clean=True)
+    claims.log_stale(cfg.runs_dir, [x for x in stale if x.get("run_id") != run_id], by=f"ck-run reattach ({run_id})")
+    return rc

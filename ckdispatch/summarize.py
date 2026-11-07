@@ -9,6 +9,71 @@ from .prompt import SUMMARY_MAX_CHARS, SUMMARY_MAX_LINES
 
 READ_TOOLS = {"Read", "NotebookRead"}
 
+# result.json v4 (BUILD_SPEC_v4 section 7): fields for chalach's finish card
+V4_FIELDS = ("plain_summary", "verification", "decisions", "later", "you_should_know", "your_move")
+V4_NUMBER_FIELDS = ("what_else", "limit")
+VERIFICATION = ("hardware", "local_sim", "fake_or_tests", "desk_check", "not_checked")  # best first
+VERIFICATION_WORDS = {"hardware": "hardware test", "local_sim": "local sim you ran", "fake_or_tests": "fake data or tests",
+                      "desk_check": "desk check", "not_checked": "not checked"}
+SOURCE_TAGS = ("paper", "datasheet", "measured", "simulated", "chalach", "guess")
+_V4_MISSING = re.compile(r"^\$(?:\.numbers\[\d+\])?: missing '(\w+)'$")
+
+
+def split_v4_errors(errors: list) -> tuple:
+    """(other errors, missing v4 field names). A result without the v4 fields (an older agent prompt, a CLI that
+    does not enforce the schema) still counts; the finish card just has less to show for it."""
+    hard, missing = [], []
+    for e in errors or []:
+        m = _V4_MISSING.match(e)
+        name = m.group(1) if m else None
+        top = e.startswith("$: ")
+        if name and ((top and name in V4_FIELDS) or (not top and name in V4_NUMBER_FIELDS)):
+            if name not in missing:
+                missing.append(name)
+        else:
+            hard.append(e)
+    return hard, missing
+
+
+def _strs(v, cap: int) -> list:
+    if isinstance(v, str):
+        v = v.splitlines()
+    if not isinstance(v, list):
+        return []
+    out = []
+    for x in v:
+        s = " ".join(str(x).split())
+        if s and s not in out:
+            out.append(s)
+    return out[:cap]
+
+
+def lowest_verification(levels) -> str | None:
+    """The worst level in `levels` (a reviewer can lower a result's level, never raise it); None if none is known."""
+    known = [lv for lv in levels or [] if lv in VERIFICATION]
+    return max(known, key=VERIFICATION.index) if known else None
+
+
+def v4_fields(structured) -> dict:
+    """The v4 fields of an agent's result, cleaned: plain_summary (<=3), verification (a known level or None),
+    decisions, later, you_should_know (<=2), your_move ('' when none)."""
+    r = structured if isinstance(structured, dict) else {}
+    ver = r.get("verification")
+    move = r.get("your_move")
+    move = " ".join(str(move).split()) if isinstance(move, str) else ""
+    if move.lower().rstrip(".") in ("nothing", "none", "n/a", "-"):
+        move = ""
+    decisions = []
+    for d in r.get("decisions") or []:
+        if isinstance(d, dict) and str(d.get("what") or "").strip():
+            decisions.append({k: " ".join(str(d.get(k) or "").split()) for k in ("what", "why", "source", "ref")})
+    return {"plain_summary": _strs(r.get("plain_summary"), 3),
+            "verification": ver if ver in VERIFICATION else None,
+            "decisions": decisions,
+            "later": _strs(r.get("later"), 50),
+            "you_should_know": _strs(r.get("you_should_know"), 2),
+            "your_move": move}
+
 
 def _read(path: str) -> str:
     try:
@@ -249,7 +314,8 @@ def check_numbers(numbers, ws_root: str) -> list:
                 why = "source is not a file path (not checked)"
             if tag == "ok" and n.get("verified") is False:
                 tag, why = "UNVERIFIED", "agent marked it unverified"
-        out.append({"value": n.get("value"), "unit": n.get("unit"), "source": src, "tag": tag, "why": why})
+        out.append({"value": n.get("value"), "unit": n.get("unit"), "source": src, "tag": tag, "why": why,
+                    "what_else": str(n.get("what_else") or ""), "limit": str(n.get("limit") or "")})
     return out
 
 
@@ -268,6 +334,18 @@ def render_result_md(rec: dict) -> str:
          f"{rec.get('started_at')} → {rec.get('finished_at')} ({rec.get('duration_s')} s)",
          "", "## Summary (written by the agent)" if rec.get("summary_source") == "agent" else "## Summary (fallback by ck-run)",
          _md_list(rec.get("summary_lines"))]
+    v4 = v4_fields(ar)
+    if any(v4[k] for k in V4_FIELDS):  # v4: the lines chalach's finish card is made from
+        L += ["", "## For chalach (plain words)", _md_list(v4["plain_summary"]),
+              f"- How sure: {VERIFICATION_WORDS.get(v4['verification'], 'not said')}"]
+        L += [f"- You should know: {x}" for x in v4["you_should_know"]]
+        L.append(f"- Your move: {v4['your_move'] or 'nothing'}")
+        if v4["decisions"]:
+            L += ["", "## Decisions (with sources)"]
+            L += [f"- {d['what']}: {d['why']} [{d['source'] or 'no tag'}{': ' + d['ref'] if d['ref'] else ''}]"
+                  for d in v4["decisions"]]
+        if v4["later"]:
+            L += ["", "## Later (ideas not done)", _md_list(v4["later"])]
     if rec.get("notes"):
         L += ["", "## ck-run notes", _md_list(rec["notes"])]
     L += ["", "## Report", (ar.get("report_md") or rec.get("final_text") or "(empty)").strip()]
@@ -280,7 +358,8 @@ def render_result_md(rec: dict) -> str:
         L += ["", "## Numbers"]
         for n in rec["numbers_checked"]:
             tag = "" if n["tag"] == "ok" else f" **UNVERIFIED** ({n['why']})"
-            L.append(f"- {n['value']} {n.get('unit') or ''} — {n['source'] or 'no source'}{tag}")
+            extra = "".join(f"; {k.replace('_', ' ')}: {n[k]}" for k in ("what_else", "limit") if n.get(k))
+            L.append(f"- {n['value']} {n.get('unit') or ''} — {n['source'] or 'no source'}{tag}{extra}")
     if ar.get("proposed_changes"):
         L += ["", "## Proposed changes", ar["proposed_changes"].strip()]
     if ar.get("open_questions"):

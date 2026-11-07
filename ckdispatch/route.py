@@ -125,6 +125,51 @@ def clear(runs_dir: str, agent: str | None = None) -> None:
         save_state(runs_dir, st)
 
 
+def lane(runs_dir: str, name: str) -> dict:
+    """v4 (BUILD_SPEC_v4 section 6): one lane of config/models.json, resolved to agent + model. `pick` = the worker,
+    or the first `also` model whose agent is not rate-limited (state.json, as in suggest). worker 'self' = Grok Bot
+    answers itself; 'race' = the race models (models.json race_default)."""
+    from . import models as M
+    lanes = M.lanes()
+    if name not in lanes:
+        from .errors import Refused
+        raise Refused(f"unknown lane '{name}'; use one of: {', '.join(lanes)}")
+    row = lanes[name]
+    st = load_state(runs_dir)
+    worker = M.describe(row.get("worker"))
+    also = [M.describe(a) for a in row.get("also") or []]
+    out = {"lane": name, "worker": worker, "also": also, "check": M.describe(row.get("check")), "pick": None,
+           "skipped": {}, "note": ""}
+    if worker["alias"] == "self":
+        out["pick"], out["note"] = worker, "Grok Bot answers itself (no agent run)"
+        return out
+    if worker["alias"] == "race":
+        race = [M.describe(a) for a in M.race_models()]
+        for r in race:
+            lim = limited(st, r["agent"])
+            if lim:
+                out["skipped"][r["agent"]] = f"rate-limited until {lim['until']}"
+        out["race"] = [r for r in race if r["agent"] not in out["skipped"]]
+        out["pick"] = worker
+        out["note"] = "race: " + ", ".join(r["alias"] for r in out["race"]) + (
+            f" (skipped: {', '.join(out['skipped'])})" if out["skipped"] else "")
+        return out
+    for cand in [worker] + also:
+        if cand["agent"] is None:
+            continue
+        lim = limited(st, cand["agent"])
+        if lim:
+            out["skipped"][cand["agent"]] = f"rate-limited until {lim['until']}"
+            continue
+        out["pick"] = cand
+        break
+    if out["pick"] is None:
+        out["note"] = "every model of this lane is rate-limited"
+    elif out["pick"]["alias"] != worker["alias"]:
+        out["note"] = f"fallback; worker {worker['alias']} skipped"
+    return out
+
+
 def suggest(runs_dir: str, task_type: str, review_of: str | None = None) -> dict:
     primary, cross = MATRIX.get(task_type, MATRIX["general"])
     if review_of:

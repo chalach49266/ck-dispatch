@@ -26,6 +26,21 @@ One JSON line per event. Every line has the same keys:
   status         dispatched | ok | partial | failed | timeout | flagged | violation | refused | busy | fallback
   accepted       null until `ck-run accept`, then true/false
   ts, started_at, finished_at, duration_s, exit_code, note
+
+v4 (2026-11-05, BUILD_SPEC_v4 section 4). New keys, appended after the old ones:
+  ask_id         the ask (A-MMDD-N) of the run; every event a run writes carries it (runner base), with
+  size, pattern  the ask's size (S, M, L) and pattern (solo, pair, race, split, panel, loop),
+  tier, model_alias  the run's tier (fast, strong, top) and alias (sol, opus, ...); `model` = the resolved model id
+  lane, trigger, over, slug, pid, reason, words, project, budget, card
+New events (asks.py unless noted; events with no run have run_id null):
+  ask_open       ask_id, words (chalach verbatim), title, size, pattern, project, budget (dict), note (models, because)
+  ask_park       ask_id, reason
+  ask_close      ask_id, status (done | partial | not_done), card (the finish card), note
+  answered       ask_id, note (Grok Bot answered the ask itself, no agent)
+  later_add      ask_id, note (the item)
+  over_budget    ask_id, run_id, reason, status (refused | approved), over (chalach's words when approved)
+  launch, stall, resume_sent, watchdog_stop, reattach (E2), andon, race, panel, loop_iter (E3): see the spec
+load() returns every event; runs() groups only events that have a run_id.
 """
 from __future__ import annotations
 
@@ -37,7 +52,10 @@ from datetime import datetime
 KEYS = ["event", "run_id", "parent_run_id", "from", "to", "via", "title", "workspace", "task_type", "agent",
         "model", "mode", "auto_readonly", "approved", "write_scope", "claims", "prompt_path", "response_path", "summary_path",
         "files_read", "files_changed", "status", "accepted", "ts", "started_at", "finished_at",
-        "duration_s", "exit_code", "note"]
+        "duration_s", "exit_code", "note",
+        # v4 (2026-11-05): appended, the old order is kept
+        "ask_id", "size", "pattern", "tier", "lane", "trigger", "over", "slug", "pid", "reason", "words", "project",
+        "budget", "card", "model_alias"]
 LIST_CAP = 200
 
 
@@ -78,7 +96,7 @@ def load(runs_dir: str) -> list:
             for line in f:
                 try:
                     ev = json.loads(line)
-                    if isinstance(ev, dict) and ev.get("run_id"):
+                    if isinstance(ev, dict):  # v4: ask events have no run_id; runs() skips them
                         out.append(ev)
                 except ValueError:
                     continue
@@ -100,7 +118,12 @@ class Run:
 
     @property
     def opening(self):
-        return self.first("dispatch", "review", "refused", "busy") or self.events[0]
+        # by kind, not by time: an approved over_budget event (v4) is written just before the run's dispatch event
+        for names in (("dispatch", "review"), ("refused", "busy"), ("over_budget",)):
+            ev = self.first(*names)
+            if ev is not None:
+                return ev
+        return self.events[0]
 
     @property
     def parent(self):
@@ -114,7 +137,9 @@ class Run:
 def runs(events: list) -> dict:
     out = {}
     for ev in events:
-        out.setdefault(ev["run_id"], Run(ev["run_id"])).events.append(ev)
+        rid = ev.get("run_id")
+        if rid:
+            out.setdefault(rid, Run(rid)).events.append(ev)
     return out
 
 
@@ -183,7 +208,10 @@ def render_thread(events: list, run_id: str, with_summary: bool = True) -> str:
         L.append(f"{'#' * min(2 + depth, 6)} {num}  {label} · {op.get('title') or ''}{mark}")
         L.append(f"- run `{rid}` · {op.get('workspace') or '?'} · mode {op.get('mode') or '?'}"
                  + (f" · task {op.get('task_type')}" if op.get("task_type") else "")
-                 + (f" · model {op.get('model')}" if op.get("model") else ""))
+                 + (f" · model {op.get('model')}" if op.get("model") else "")
+                 + (f" ({op.get('model_alias')}, {op.get('tier')} tier)" if op.get("model_alias") else "")
+                 + (f" · ask {op.get('ask_id')}" if op.get("ask_id") else "")
+                 + (f" · review reason {op.get('trigger')}" if op.get("trigger") else ""))
         if op.get("approved"):
             L.append(f"- edit approved: \"{op['approved']}\" · scope: " + ", ".join(f"`{s}`" for s in op.get("write_scope") or []))
         if op.get("claims"):
@@ -201,6 +229,8 @@ def render_thread(events: list, run_id: str, with_summary: bool = True) -> str:
                 L.append(f"- note: {res['note']}")
         elif kind in ("refused", "busy"):
             L.append(f"- **{op.get('status')}** at {_hm(op.get('ts'))}: {op.get('note') or ''}")
+        elif kind == "over_budget":
+            L.append(f"- **over budget** ({op.get('status')}) at {_hm(op.get('ts'))}: {op.get('reason') or ''}")
         else:
             L.append(f"- status: {op.get('status')} since {_hm(op.get('ts'))} (no result yet)")
         for ev in r.events:
@@ -211,6 +241,13 @@ def render_thread(events: list, run_id: str, with_summary: bool = True) -> str:
                 L.append(f"- **live fallback**: {ev.get('note') or ''}")
             elif name == "stale":
                 L.append(f"- **stale** at {_hm(ev.get('ts'))}: {ev.get('note') or ''}")
+            elif name in ("stall", "resume_sent", "watchdog_stop", "reattach"):  # v4 watchdog / reattach (E2)
+                L.append(f"- {name.replace('_', ' ')} at {_hm(ev.get('ts'))}"
+                         + (f" ({ev.get('reason')})" if ev.get("reason") else "")
+                         + (f": {(ev.get('note') or '')[:300]}" if ev.get("note") else ""))
+            elif name == "over_budget" and ev is not op:
+                L.append(f"- over budget **{ev.get('status')}**: {ev.get('reason') or ''}"
+                         + (f" (chalach: \"{ev.get('over')}\")" if ev.get("over") else ""))
             elif name.endswith("_review"):  # cursor_review / agy_review: the mandatory post-run Claude check
                 L.append(f"- {name.replace('_', ' ')}: **{ev.get('status')}** · `{ev.get('response_path')}` · "
                          f"{(ev.get('note') or '')[:300]}")

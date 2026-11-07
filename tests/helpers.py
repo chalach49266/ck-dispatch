@@ -90,8 +90,14 @@ class Sandbox:
             if not w["root"].startswith(self.tmp + os.sep):
                 raise RuntimeError(f"test config would use the real folder of workspace '{key}': {w['root']}")
         # --live stays on by default; the mock osascript fails unless a test says otherwise (see window())
+        # v4: no stall watchdog, no caffeinate, no tab closing unless a test turns them on (set_live(...))
         cfg["live"] = {"default": True, "osascript": os.path.join(self.stubs, "osascript"),
-                       "start_timeout_s": 3, "early_exit_s": 20, "poll_s": 0.2}
+                       "start_timeout_s": 3, "early_exit_s": 20, "poll_s": 0.2,
+                       "watchdog": False, "keep_awake": False, "close_tab_after_s": 0}
+        # v4 (BUILD_SPEC_v4 5, 8): old tests run without asks and with the post-run review of cursor/agy auto runs;
+        # v4 tests flip these with set_section("asks", required=True) / set_section("post_review", enabled=False)
+        cfg.setdefault("asks", {})["required"] = False
+        cfg.setdefault("post_review", {})["enabled"] = True
         self.config = os.path.join(self.tmp, "config.json")
         with open(self.config, "w") as f:
             json.dump(cfg, f, indent=1)
@@ -124,6 +130,21 @@ class Sandbox:
         cfg["live"].update(kw)
         with open(self.config, "w") as f:
             json.dump(cfg, f, indent=1)
+
+    def set_section(self, section, **kw):
+        """Change one top-level section of the test config, e.g. set_section("asks", required=True)."""
+        with open(self.config) as f:
+            cfg = json.load(f)
+        cfg.setdefault(section, {}).update(kw)
+        with open(self.config, "w") as f:
+            json.dump(cfg, f, indent=1)
+
+    def open_ask(self, size="M", title="Test ask", words="chalach: do the test task", *extra):
+        """ck-run ask open ...; returns the ask id (line 1 of the output)."""
+        p = self.ck("ask", "open", "--words", words, "--size", size, "--title", title, *extra)
+        if p.returncode != 0:
+            raise AssertionError(f"ask open failed: {p.stderr}")
+        return p.stdout.splitlines()[0].strip()
 
     def osascript_calls(self):
         d = os.path.join(self.stubs, "osascript-calls")
@@ -170,7 +191,8 @@ class Sandbox:
 
     def run(self, agent="claude", ws="devfab", *extra, title="Test task", task=None):
         # ck-run's default is --mode auto (2026-11-02); older tests were written for read, so pin it unless given
-        mode = [] if any(str(x).startswith("--mode") for x in extra) else ["--mode", "read"]
+        # exact --mode / --mode=...: v4's --model must not count as a mode
+        mode = [] if any(str(x) == "--mode" or str(x).startswith("--mode=") for x in extra) else ["--mode", "read"]
         return self.ck("run", "--agent", agent, "--workspace", ws, "--title", title,
                        "--prompt-file", task or self.task(), *mode, *extra)
 

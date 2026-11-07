@@ -53,6 +53,14 @@ prompt, per each CLI's --help: claude [prompt], codex [PROMPT], cursor agent [pr
 Web search (chalach 2026-11-05 ~18:55 CT: "I want to clear the restriction"): every codex argv above (all modes,
 headless and --live) also gets -c web_search="live" (CODEX_WEB_CONFIG). Claude's WebSearch/WebFetch are allowed
 by its settings file (config/claude-guard.base.json). Cursor and agy have no web flag; ck-run never turned theirs off.
+
+Model and effort (v4, 2026-11-05, BUILD_SPEC_v4 section 6; the runner resolves them with models.resolve):
+  claude  --model <opus|sonnet|haiku> [--effort <level>]          (before --permission-mode in --live)
+  codex   -m <model> [-c model_reasoning_effort="<level>"]
+  cursor  --model <slug>                                         (the effort is in the slug)
+  agy     [--model <raw id>] only; never an effort flag             (gemini = agy's default: no flag)
+effort is passed only when models.json _verified lists it; guards.check_child_argv admits these tokens only for that
+agent, and check_ck_argv refuses them from CK. model=None, effort=None gives the argv of before v4.
 """
 from __future__ import annotations
 
@@ -120,7 +128,8 @@ def resolve_binary(cfg: Config, agent: str) -> str:
 
 def build(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, model: str | None,
           run_dir: str, schema_path: str, extra_read_dirs: list, timeout_s: int,
-          claude_settings_path: str, binary: str | None = None, readonly: bool = False) -> Command:
+          claude_settings_path: str, binary: str | None = None, readonly: bool = False,
+          effort: str | None = None) -> Command:
     """readonly: an auto run with no write area (runner.auto_readonly_reason, chalach 2026-11-03 19:34 CT). Each
     agent keeps its auto argv; only codex's write area is a flag (-s workspace-write -> -s read-only, approvals
     still routed to auto_review). Claude: the workspace-wide deny rules come from the settings file (runner)."""
@@ -153,6 +162,7 @@ def build(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, mo
             a += ["--add-dir", d]
         if model:
             a += ["--model", model]
+        a += _effort(agent, effort)
         cwd = ws.root
     elif agent == "codex":
         a += ["exec", "--json", "-o", os.path.join(run_dir, "last.md"), "--output-schema", schema_path]
@@ -176,6 +186,7 @@ def build(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, mo
         a += CODEX_WEB_CONFIG  # live web search in every mode (chalach 2026-11-05)
         if model or mode == "auto":
             a += ["-m", model or CODEX_AUTO_MODEL]
+        a += _effort(agent, effort)
         a += ["-"]  # read the prompt from stdin
     elif agent == "cursor":
         a += ["-p", "--output-format", "json", "--trust", "--sandbox", "enabled"]
@@ -228,7 +239,7 @@ def build(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, mo
 
 def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: list, model: str | None,
                run_dir: str, extra_read_dirs: list, claude_settings_path: str, session_id: str | None = None,
-               binary: str | None = None, readonly: bool = False) -> Command:
+               binary: str | None = None, readonly: bool = False, effort: str | None = None) -> Command:
     """argv for --live: the agent's own interactive CLI (TUI), with the prompt as its first message.
 
     Same permission flags as build(); the print/exec/output/schema flags are dropped (interactive mode has
@@ -263,6 +274,7 @@ def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: lis
             a += ["--allowedTools", "Read,Grep,Glob,Edit,Write,Bash(pytest:*)"]
         if model:
             a += ["--model", model]
+        a += _effort(agent, effort)
         a += ["--permission-mode", {"read": "plan", "edit": "acceptEdits", "auto": "auto"}[mode]]
         cwd = ws.root
     elif agent == "codex":
@@ -287,6 +299,7 @@ def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: lis
         a += ["-a", "on-request"]
         if model or mode == "auto":
             a += ["-m", model or CODEX_AUTO_MODEL]
+        a += _effort(agent, effort)
     elif agent == "cursor":
         a += ["--trust", "--sandbox", "enabled"]
         if mode == "read":
@@ -327,6 +340,17 @@ def build_live(cfg: Config, ws: Workspace, agent: str, *, mode: str, scopes: lis
     _assert_invariants(agent, mode, a, live=True, readonly=readonly)
     check_child_argv(a, PROMPT, auto=mode == "auto", agent=agent)
     return Command(agent, a, cwd, False, binary)
+
+
+def _effort(agent: str, effort: str | None) -> list:
+    """The effort flag ck-run injects (claude --effort, codex -c model_reasoning_effort); cursor and agy get none."""
+    if not effort:
+        return []
+    if agent == "claude":
+        return ["--effort", effort]
+    if agent == "codex":
+        return ["-c", f'model_reasoning_effort="{effort}"']
+    return []
 
 
 def _unique(paths: list, skip: str | None = None, already: list | None = None) -> list:

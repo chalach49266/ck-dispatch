@@ -1,0 +1,239 @@
+[
+  {
+    "id": "D1",
+    "date": "2026-11-02",
+    "words": "UNKNOWN: chalach's own words are not quoted in README.md or PROGRESS.md (README table 'Decisions (user, 2026-11-02)')",
+    "rule": "Codex may edit inside Device Fabrication / NV Compact Magnetometer after approval; raw folders are blocked.",
+    "enforced_by": "flags.EDIT_AREAS, guards.validate_write_scopes",
+    "source": "README.md 'Decisions (user, 2026-11-02)'"
+  },
+  {
+    "id": "D2",
+    "date": "2026-11-02",
+    "words": "UNKNOWN: chalach's own words are not quoted in README.md or PROGRESS.md (README table 'Decisions (user, 2026-11-02)')",
+    "rule": "agy may edit after approval with --mode accept-edits; --mode auto only when ck-run injects it (auto mode); never skip-permissions.",
+    "enforced_by": "flags.build, guards.FORBIDDEN_SUBSTRINGS",
+    "source": "README.md 'Decisions (user, 2026-11-02)'"
+  },
+  {
+    "id": "D3",
+    "date": "2026-11-02",
+    "words": "UNKNOWN: chalach's own words are not quoted in README.md or PROGRESS.md (README table 'Decisions (user, 2026-11-02)')",
+    "rule": "Framework v3 goes in the real PhD folder later (not in this step).",
+    "enforced_by": "none (a documents decision)",
+    "source": "README.md 'Decisions (user, 2026-11-02)'"
+  },
+  {
+    "id": "D4",
+    "date": "2026-11-02",
+    "words": "UNKNOWN: chalach's own words are not quoted in README.md or PROGRESS.md (README table 'Decisions (user, 2026-11-02)')",
+    "rule": "Cursor always gets --trust; --mode plan unless the edit is approved.",
+    "enforced_by": "flags.build",
+    "source": "README.md 'Decisions (user, 2026-11-02)'"
+  },
+  {
+    "id": "plan-claude-edit",
+    "date": "2026-11-02",
+    "words": "UNKNOWN: this row comes from the plan, not from chalach's words (README Decisions table, row '(plan)')",
+    "rule": "In edit mode Claude edits only a ~/PhD_local repo (its settings deny Edit on both workspaces).",
+    "enforced_by": "flags.EDIT_AREAS[\"claude\"], runner.write_claude_settings",
+    "source": "README.md 'Decisions (user, 2026-11-02)', row '(plan)'"
+  },
+  {
+    "id": "washu-ownership",
+    "date": "2026-11-02",
+    "words": "UNKNOWN: not quoted in README.md or PROGRESS.md (README 'Raw folders': CLAUDE.md:67-75 'Ownership' and chalach 2026-11-02)",
+    "rule": "WashU HW: the original course files are read-only; agents write only in <course>/solutions/ and <course>/prep/.",
+    "enforced_by": "config/workspaces.json washu writable_only, rulecheck",
+    "source": "README.md 'Raw folders (read-only)', WashU HW"
+  },
+  {
+    "id": "auto-mode",
+    "date": "2026-11-02",
+    "time": "22:34 CST",
+    "words": "UNKNOWN: not quoted in README.md or PROGRESS.md (README: 'chalach approved 22:34 CST')",
+    "rule": "--mode auto is the default: each agent runs in its own safety-reviewed auto mode; ck-run injects the flags; never a full bypass.",
+    "enforced_by": "cli run --mode (default auto), flags.build, guards.check_child_argv(auto=True)",
+    "source": "README.md 'Auto mode (default since 2026-11-02; chalach approved 22:34 CST)'"
+  },
+  {
+    "id": "cursor-allow-all",
+    "date": "2026-11-03",
+    "words": "do cursor allow everything setting and also have claude code check ... if it is anything important but otherwise always allow",
+    "rule": "Cursor auto runs with its allow-all flag --force (only ck-run injects it). The 'claude code check' part (the post-run review) is off since 2026-11-05 (post-review-off).",
+    "enforced_by": "flags.build (cursor auto --force), guards.AUTO_AGENT_FLAGS",
+    "source": "README.md 'Auto mode'"
+  },
+  {
+    "id": "agy-edit",
+    "date": "2026-11-03",
+    "words": "allow agy to edit any file",
+    "rule": "agy auto runs do not stop to ask before edits (agy --mode auto); raw folders stay guarded by the rule check.",
+    "enforced_by": "flags.build, flags.build_live (agy auto --mode auto)",
+    "source": "README.md 'Auto mode'"
+  },
+  {
+    "id": "agy-auto-dirs",
+    "date": "2026-11-03",
+    "words": "agy still asks permission for the Device Fabrication folder ... pass agy --mode auto plus --add-dir for the workspace root and the run folder",
+    "rule": "agy auto gets --mode auto plus --add-dir for the workspace root and the run folder (headless and live); never --dangerously-skip-permissions.",
+    "enforced_by": "flags.build, flags.build_live",
+    "source": "README.md 'Auto mode' (chalach, later the same day)"
+  },
+  {
+    "id": "aqs-writable",
+    "date": "2026-11-03",
+    "time": "14:48 CT",
+    "words": "Keep AQS writable from the NV workspace",
+    "rule": "nv: AQS/ is writable (writable_only), not a raw folder.",
+    "enforced_by": "config/workspaces.json nv writable_only",
+    "source": "PROGRESS.md 'AQS task'; README.md 'Raw folders'"
+  },
+  {
+    "id": "aqs-review",
+    "date": "2026-11-03",
+    "time": "15:07 CT",
+    "words": "yes",
+    "rule": "The cursor/agy post-run review does not flag nv AQS/ edits inside the task folder.",
+    "enforced_by": "postreview.WRITABLE_SEGMENTS",
+    "source": "PROGRESS.md 'AQS review task'"
+  },
+  {
+    "id": "parallel-runs",
+    "date": "2026-11-03",
+    "words": "UNKNOWN: not quoted in README.md or PROGRESS.md (README 'Concurrent runs (chalach 2026-11-03)')",
+    "rule": "No workspace lock: any number of runs, any agents, at the same time; only overlapping --claim paths are refused (busy, exit 6).",
+    "enforced_by": "claims.py (run registry, claims)",
+    "source": "README.md 'Concurrent runs (chalach 2026-11-03)'"
+  },
+  {
+    "id": "auto-claims",
+    "date": "2026-11-03",
+    "time": "19:02 CT",
+    "words": "Yes, have edit runs claim their write folders automatically",
+    "rule": "Edit runs (and auto runs given --write-scope) claim their --write-scope folders automatically, except shared folders (workspace roots, default write folders, wiki entry folders).",
+    "enforced_by": "claims.from_scopes, claims.shared_area",
+    "source": "README.md 'Concurrent runs'; PROGRESS.md 'autoclaim task'"
+  },
+  {
+    "id": "auto-readonly",
+    "date": "2026-11-03",
+    "time": "19:34 CT",
+    "words": "Change ck-run so auto mode in WashU runs read-only when no writable folder exists",
+    "rule": "An auto run in a writable-only workspace where no writable folder exists runs read-only (auto_readonly) instead of exit 2.",
+    "enforced_by": "runner.auto_readonly_reason, flags.build(readonly=True), rulecheck",
+    "source": "README.md 'Auto mode'; PROGRESS.md 'washuauto'"
+  },
+  {
+    "id": "word-only-notes",
+    "date": "2026-11-04",
+    "time": "~23:00 CT",
+    "words": "yes you can change the ck-run to treat a word only metion and note and you can always allow those git push and pip install",
+    "rule": "A rule pattern found only in output text (no tool log) is a note, not a flag; credential, cloud_sim and permission_bypass mentions stay flags (safety carve-out).",
+    "enforced_by": "rulecheck.TEXT_NOTE, rulecheck.TEXT_FLAG_CATEGORIES",
+    "source": "PROGRESS.md 'flagfix task' (verbatim)"
+  },
+  {
+    "id": "git-push-pip",
+    "date": "2026-11-04",
+    "time": "~23:00 CT",
+    "words": "yes you can change the ck-run to treat a word only metion and note and you can always allow those git push and pip install",
+    "rule": "git push and pip install (pip, pip3, python -m pip, uv pip) are always allowed: in agent actions they are a note, never a violation or flag.",
+    "enforced_by": "rulecheck.ALLOWED_ACTIONS, postreview (allowed keyword hits)",
+    "source": "PROGRESS.md 'flagfix task' (verbatim); README.md 'Rule check after each run'"
+  },
+  {
+    "id": "web-search",
+    "date": "2026-11-05",
+    "time": "~18:55 CT",
+    "words": "Why are you setting all the bots agent deployment web search restriction. I want to clear the restriction. What are other restriction right now",
+    "rule": "Every agent run may use the agent's built-in web search and fetch; shell network tools (curl, wget, scp, rsync, ssh), gh, wrangler and mail stay blocked.",
+    "enforced_by": "config/claude-guard.base.json allow, flags.CODEX_WEB_CONFIG, rulecheck.WEB_TOOLS, prompt.WEB_RULE",
+    "source": "PROGRESS.md 'webunblock task' (verbatim); README.md 'Web search: allowed'"
+  },
+  {
+    "id": "fleet-lanes",
+    "date": "2026-11-05",
+    "time": "~22:50 CST",
+    "words": "First four questions all yes.",
+    "rule": "Fleet lanes: Sol for code, Opus for writing, Grok 4.7 for scouting and third views, Astra for hard steps and races; Composer, Sonnet and Gemini Flash for fast jobs.",
+    "enforced_by": "config/models.json (aliases, tiers, lanes), ck-run route --lane",
+    "source": "BUILD_SPEC_v4.md section 0 (question 1) and section 6",
+    "expect": {
+      "lanes": ["quick", "lab-code", "bug-fix", "numbers", "wiki", "writing", "decision", "loop", "repo", "scout", "mechanical"],
+      "race_default": ["astra", "opus", "grok"]
+    }
+  },
+  {
+    "id": "triggers",
+    "date": "2026-11-05",
+    "time": "~22:50 CST",
+    "words": "First four questions all yes.",
+    "rule": "Trigger words: quick, do, plan, race, check, recall; extra: split, deep, fix, loop, why, number, teach; plus model words and size words S, M, L.",
+    "enforced_by": "grokbot mod trigger line, ckstack ck-mode",
+    "source": "BUILD_SPEC_v4.md section 0 (question 2)"
+  },
+  {
+    "id": "sizes-budgets",
+    "date": "2026-11-05",
+    "time": "~22:50 CST",
+    "words": "First four questions all yes.",
+    "rule": "Every ask has a size S, M or L with a budget that ck-run counts (runs, parallel, reviews, fixes, wall time); over budget = exit 7. A review needs one of 4 reasons: leaves-lab, hardware-or-raw, agent-unsure, you-asked.",
+    "enforced_by": "asks.gate (exit 7), ck-run review --trigger, config/workspaces.json asks",
+    "source": "BUILD_SPEC_v4.md section 0 (question 3) and section 5",
+    "expect": {
+      "asks_budgets": {
+        "S": {"runs": 1, "parallel": 1, "reviews": 0, "fixes": 0, "wall_min": 15, "timeout_s": 600, "stall_s": 180},
+        "M": {"runs": 2, "parallel": 1, "reviews": 1, "fixes": 1, "wall_min": 45, "timeout_s": 1800, "stall_s": 300},
+        "L": {"runs": 6, "parallel": 3, "reviews": 2, "fixes": 2, "wall_min": 180, "timeout_s": 7200, "stall_s": 480}
+      },
+      "review_triggers": ["leaves-lab", "hardware-or-raw", "agent-unsure", "you-asked"],
+      "over_budget_exit": 7
+    }
+  },
+  {
+    "id": "s-asks-self",
+    "date": "2026-11-05",
+    "time": "~22:50 CST",
+    "words": "First four questions all yes.",
+    "rule": "Grok Bot answers S asks itself, with no agent, and records it (ck-run ask answered).",
+    "enforced_by": "ckstack ck-mode, ck-run ask answered",
+    "source": "BUILD_SPEC_v4.md section 0 (question 4)"
+  },
+  {
+    "id": "board-minimal",
+    "date": "2026-11-05",
+    "time": "~22:50 CST",
+    "words": "For fifth minimal would be good just to have an idea of each bot.",
+    "rule": "Board: a status line plus an on-demand text board, one line per bot; no side pane.",
+    "enforced_by": "ck-run board, grokbot mod status line",
+    "source": "BUILD_SPEC_v4.md section 0 (question 5)"
+  },
+  {
+    "id": "ckstack",
+    "date": "2026-11-05",
+    "time": "~22:50 CST",
+    "words": "Sixth question yes.",
+    "rule": "ckstack is chalach's own skill stack (repo ~/PhD_local/ckstack, v0 drafted from chalach's memories).",
+    "enforced_by": "~/PhD_local/ckstack",
+    "source": "BUILD_SPEC_v4.md section 0 (question 6)"
+  },
+  {
+    "id": "post-review-off",
+    "date": "2026-11-05",
+    "time": "~22:50 CST",
+    "words": "Seventh no need review, since those one are for simple stupid task anyways.",
+    "rule": "No mandatory post-run Claude review after cursor and agy auto runs (post_review.enabled false); the rule check still runs.",
+    "enforced_by": "config/workspaces.json post_review.enabled, runner (call-site gating)",
+    "source": "BUILD_SPEC_v4.md section 0 (question 7) and section 8"
+  },
+  {
+    "id": "build-now",
+    "date": "2026-11-05",
+    "time": "~22:50 CST",
+    "words": "Eight, instead of just phase 0 can you go ahead and start to build everything in one go",
+    "rule": "Build all of v4 in one go, not only phase 0.",
+    "enforced_by": "none (a build decision)",
+    "source": "BUILD_SPEC_v4.md section 0 (question 8)"
+  }
+]
