@@ -200,10 +200,23 @@ def pane_shell(agent):
     return str(shim) if shim and os.access(shim, os.X_OK) else "/bin/bash"
 
 
-def run_argv(run_id, cwd, script, main, labels, agent=None):
+TITLE_MAX = 48
+
+
+def job_label(title):
+    """ck.title=<short job description>: the CK Herdr mods show it next to the run name (chalach 2026-11-15)."""
+    t = " ".join(str(title or "").split())
+    if not t:
+        return []
+    if len(t) > TITLE_MAX:
+        t = t[:TITLE_MAX - 1].rstrip() + "…"
+    return ["--label", f"ck.title={t}"]
+
+
+def run_argv(run_id, cwd, script, main, labels, agent=None, title=None):
     return [hc_path(), "run", "--json", "--bg", "--outlive-parent", "--name", safe_name(run_id),
             "--cwd", str(cwd), "--label", "ck-run=true", "--label", f"ck.main={main}",
-            *labels, "--", pane_shell(agent), str(script)]
+            *labels, *job_label(title), "--", pane_shell(agent), str(script)]
 
 
 def plan(run_id, cwd, script, host):
@@ -215,7 +228,7 @@ def plan(run_id, cwd, script, host):
             + "# hc unavailable/failing -> configured iTerm path; Herdr panes retained; final ck.state label")
 
 
-def open_window(run_id, cwd, script, main, runs_dir, run_dir, agent=None):
+def open_window(run_id, cwd, script, main, runs_dir, run_dir, agent=None, title=None):
     out = {"ok": False, "error": None, "window_id": None, "terminal": "Herdr", "how": None,
            "session_id": None, "tab": False, "herdr_terminal": None}
     with (Path(run_dir) / "herdr.log").open("a") as log:
@@ -230,7 +243,7 @@ def open_window(run_id, cwd, script, main, runs_dir, run_dir, agent=None):
                 else:
                     log.write(f"ck-run: main {main!r} not found in Herdr; falling back to new tab in CK space\n")
                     labels = space_label(runs_dir, log)
-                terminal = invoke(run_argv(run_id, cwd, script, main, labels, agent), log)
+                terminal = invoke(run_argv(run_id, cwd, script, main, labels, agent, title), log)
                 address = terminal.get("address") or terminal.get("id")
                 if not isinstance(address, str) or not address:
                     raise ValueError("hc run returned no terminal address")

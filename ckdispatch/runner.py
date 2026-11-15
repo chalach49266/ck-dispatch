@@ -669,7 +669,7 @@ def _live_phase(cfg, spec, ws, run_dir, paths, lv, env, base=None):
     win = None
     if is_herdr:
         win = herdr.open_window(spec.run_id, lv["cmd"].cwd, paths["live_sh"], host.partition(":")[2],
-                                cfg.runs_dir, run_dir, agent=spec.agent)
+                                cfg.runs_dir, run_dir, agent=spec.agent, title=spec.title)
         if not win["ok"]:
             reason = win["error"]
             print(f"ck-run: Herdr unavailable; falling back to iTerm path: {reason}", file=sys.stderr)

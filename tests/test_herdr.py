@@ -77,6 +77,15 @@ class HerdrTests(unittest.TestCase):
         self.assertEqual(herdr.saved(self.rd)["terminal"], out["herdr_terminal"])
         self.assertNotEqual(herdr.safe_name("x" * 100 + "a"), herdr.safe_name("x" * 100 + "b"))
 
+    def test_job_title_label(self):
+        argv = herdr.run_argv("r", "/tmp", "/x/live.sh", "t-main", [], agent="codex", title="  FND-SiN MW stack  -> wiki ")
+        self.assertIn("ck.title=FND-SiN MW stack -> wiki", argv)
+        self.assertLess(argv.index("ck.title=FND-SiN MW stack -> wiki"), argv.index("--"))
+        long = herdr.job_label("x" * 100)[1]
+        self.assertEqual(len(long), len("ck.title=") + herdr.TITLE_MAX)
+        self.assertEqual(herdr.job_label(""), [])
+        self.assertNotIn("--label", herdr.run_argv("r", "/tmp", "/x", "m", [])[-3:])
+
     def test_cursor_pane_starts_through_agent_named_bash(self):
         shell = herdr.pane_shell("cursor")
         self.assertEqual(os.path.basename(shell), "agent")
