@@ -1,0 +1,3 @@
+Commit 1914397 (local, not pushed): "post-run review: nv AQS/ edits are not raw (chalach 2026-11-03 15:07 CT: "yes")".
+Tests: 113/113 pass (python3 -I tests/run_all.py; was 109, +4 in tests/test_postreview.py; the new nv tests fail on the old code).
+Changed: postreview.py no longer flags AQS/ edits inside the task folder when the workspace is nv (WRITABLE_SEGMENTS); the evidence, reviewer prompt and review.md say so; AQS/ from other workspaces is still raw, and every other flag stays (nv AQS outside --write-scope, AQS/.../raw/, deletions, nv raw list, risky commands); README + docs/framework_v3 updated (AQS open item closed, one-pager PDF regenerated, 1 page, untracked).

@@ -1,0 +1,77 @@
+{
+  "_note": "Aliases chalach types (sol, astra, ...). Effort names and cursor slugs: see _verified. ck-run passes an effort flag only when _verified lists that effort for the agent; CK can never pass --effort or -c itself.",
+  "aliases": {
+    "sol":      {"agent": "codex",  "model": "gpt-6.1-sol",   "effort": "high",   "tier": "strong", "family": "openai"},
+    "sol-fast": {"agent": "codex",  "model": "gpt-6.1-sol",   "effort": "low",    "tier": "fast",   "family": "openai"},
+    "astra":    {"agent": "codex",  "model": "gpt-6-astra",   "effort": null,     "tier": "top",    "family": "openai"},
+    "opus":     {"agent": "claude", "model": "opus",          "effort": "high",   "tier": "strong", "family": "anthropic"},
+    "opus-max": {"agent": "claude", "model": "opus",          "effort": "xhigh",  "tier": "top",    "family": "anthropic"},
+    "sonnet":   {"agent": "claude", "model": "sonnet",        "effort": "medium", "tier": "fast",   "family": "anthropic"},
+    "haiku":    {"agent": "claude", "model": "haiku",         "effort": null,     "tier": "fast",   "family": "anthropic"},
+    "grok":     {"agent": "cursor", "model": "grok-4.7-high", "effort": null,     "tier": "strong", "family": "xai"},
+    "composer": {"agent": "cursor", "model": "composer-2.5",  "effort": null,     "tier": "fast",   "family": "cursor"},
+    "gemini":   {"agent": "agy",    "model": null,            "effort": null,     "tier": "fast",   "family": "google"}
+  },
+  "tiers": {
+    "claude": {"fast": "sonnet",   "strong": "opus",   "top": "opus-max"},
+    "codex":  {"fast": "sol-fast", "strong": "sol",    "top": "astra"},
+    "cursor": {"fast": "composer", "strong": "grok",   "top": "grok"},
+    "agy":    {"fast": "gemini",   "strong": "gemini", "top": "gemini"}
+  },
+  "size_tier": {"S": "fast", "M": "strong", "L": "strong"},
+  "race_default": ["astra", "opus", "grok"],
+  "lanes": {
+    "quick":      {"worker": "self",     "also": ["sonnet", "composer"], "check": null},
+    "lab-code":   {"worker": "sol",      "also": ["astra", "grok"],      "check": "opus"},
+    "bug-fix":    {"worker": "sol",      "also": ["astra"],              "check": "opus"},
+    "numbers":    {"worker": "sol",      "also": ["opus", "grok"],       "check": "opus"},
+    "wiki":       {"worker": "sol",      "also": ["composer", "gemini"], "check": "sonnet"},
+    "writing":    {"worker": "opus",     "also": ["astra", "grok"],      "check": "sol"},
+    "decision":   {"worker": "race",     "also": [],                     "check": null},
+    "loop":       {"worker": "sol-fast", "also": ["composer", "sonnet"], "check": "astra"},
+    "repo":       {"worker": "sol",      "also": ["astra"],              "check": "opus"},
+    "scout":      {"worker": "grok",     "also": ["sol"],                "check": "opus"},
+    "mechanical": {"worker": "composer", "also": ["gemini"],             "check": null}
+  },
+  "_verified": {
+    "checked_at": "2026-11-05T23:13:10-06:00",
+    "how": "read only: --help texts, agent --list-models (it only lists), strings of the installed CLI binaries, ~/.codex/config.toml. No agent prompt, no codex exec.",
+    "claude": {
+      "cli": "claude 2.1.318",
+      "model_flag": "--model <alias or full name>",
+      "models": ["opus", "sonnet", "haiku"],
+      "models_source": "alias list inside the installed claude binary: sonnet, opus, haiku, fable, best, opusplan",
+      "effort_flag": "--effort <level>",
+      "efforts": ["low", "medium", "high", "xhigh", "max"],
+      "efforts_source": "claude --help: '--effort <level>  Effort level for the current session (low, medium, high, xhigh, max)'"
+    },
+    "codex": {
+      "cli": "codex-cli 0.166.0",
+      "model_flag": "-m <model>",
+      "models": ["gpt-6.1-sol", "gpt-6-astra"],
+      "models_source": "model catalog strings in the installed codex binary; ~/.codex/config.toml model = gpt-6.1-sol, profile complex = gpt-6-astra",
+      "effort_flag": "-c model_reasoning_effort=\"<level>\"",
+      "efforts": ["low", "high"],
+      "efforts_source": {
+        "high": "~/.codex/config.toml sets model_reasoning_effort = \"high\" next to model = \"gpt-6.1-sol\" (today's codex runs use it)",
+        "low": "a built-in agent config inside the codex binary sets model_reasoning_effort = \"low\""
+      },
+      "names_in_binary": ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+      "note": "names_in_binary is one string list read from the binary. Only low and high are confirmed in use: TODO(verify) any other level before an alias uses it (until then ck-run passes no effort flag for it)."
+    },
+    "cursor": {
+      "cli": "agent 2026.11.05-86047df",
+      "model_flag": "--model <slug>",
+      "grok_4_7": ["grok-4.7-low", "grok-4.7-low-fast", "grok-4.7-medium", "grok-4.7-medium-fast",
+                   "grok-4.7-high", "grok-4.7-high-fast", "grok-4.7-xhigh", "grok-4.7-xhigh-fast"],
+      "composer_2_5": ["composer-2.5", "composer-2.5-fast"],
+      "efforts": [],
+      "note": "agent --list-models has no plain grok-4.7 slug: the effort is part of the slug. The grok alias uses grok-4.7-high (strong tier = Grok 4.7 at high effort, Framework v4 rev2 1.1). No bracket parameters are used."
+    },
+    "agy": {
+      "cli": "agy 1.5.1",
+      "efforts": [],
+      "note": "agy --help lists --model and --effort (low|medium|high|xhigh|max), but ck-run passes neither: the gemini alias is agy's default model (BUILD_SPEC_v4 6). agy models was not run."
+    }
+  }
+}

@@ -1,0 +1,7 @@
+# flagfix (2026-11-04, chalach ~23:00 CT: "treat a word only metion and note ... always allow those git push and pip install")
+- Changed: push_send / heavy_install mentioned only in output text are now notes ("mentioned in output text only (not a command)"), exit 0; they show in rulecheck.json and result.md. This clears the a020, c61a and 0d30 cases.
+- `git push` and `pip install` (pip, pip3, python -m pip, uv pip) in agent actions: note "allowed by chalach 2026-11-04: <excerpt>", never a violation or flag. The set is `rulecheck.ALLOWED_ACTIONS`. gh, wrangler, curl, wget, scp, rsync, mail, git clone, venv, npm, conda and uv venv/sync behave as before, even in the same command.
+- Post-run review: git push / pip install hits are marked allowed, never hard facts. The evidence, prompt and review.md state chalach's rule. Other checks are unchanged.
+- Safety carve-out (Grok Bot's): text-only mentions of credential, cloud_sim and permission_bypass are still FLAGS (exit 4).
+- Commit d4c7f44 (main fast-forwarded 23:32 CT; local only, no remote). Tests 177/177 (162 + 15 in tests/test_flagfix.py). The live.py colour change is still uncommitted and unchanged.
+- For chalach: (1) Claude runs still DENY `git push` / `pip install` (config/claude-guard.base.json). (2) The agent prompt's HARD RULES still say "no git push ... pip install". Should either change? (3) A new .venv/site-packages inside OneDrive is still a disk violation. (4) docs/framework_v3 still says the review flags git push.

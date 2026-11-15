@@ -1,0 +1,140 @@
+{
+  "version": 1,
+  "_note": "Paths may start with ~. Folder lists are relative to each workspace root. raw_readonly comes from the workspace rule files (see raw_source); extra_protected_dirs are ck-run additions (agent configs, skill mirrors, environments, backups). A non-empty writable_only lists the ONLY folders agents may change in that workspace (everything else there is read-only; washu: <course>/solutions and <course>/prep, one pair per course; add a pair when a course is added). All workspaces share one ledger: runs_dir. Forbidden flags and edit permissions per agent are in code (ckdispatch/guards.py, ckdispatch/flags.py), not here.",
+  "onedrive_root": "~/Library/CloudStorage/OneDrive-WashingtonUniversityinSt.Louis",
+  "local_root": "~/PhD_local",
+  "runs_dir": "~/PhD_local/agent_runs",
+  "local_protected": ["ck-dispatch", "agent_runs", "grok-bot-agents", "Device Fabrication", "NV Compact Magnetometer"],
+  "bin_dirs": ["~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"],
+  "default_timeout_s": 1200,
+  "max_timeout_s": 7200,
+  "scan_budget_s": 120,
+  "scan_max_entries": 1000000,
+  "live": {
+    "_note": "ck-run run/review --live (default below; --no-live turns it off): the agent runs in its own interactive CLI in a new Terminal window. start_timeout_s: how long to wait for the window to start the agent before falling back to headless. early_exit_s: an agent that exits this fast with an error also falls back.",
+    "default": true,
+    "terminal": "iTerm2",
+    "osascript": "/usr/bin/osascript",
+    "start_timeout_s": 30,
+    "early_exit_s": 20,
+    "poll_s": 1.0,
+    "_note_v4": "v4 (2026-11-05): watchdog = stall watchdog while a live run waits (stall_s = the ask size's stall_s, else stall_s here); keep_awake = caffeinate while a live run waits; close_tab_after_s = close the tab of a cleanly finished run after that many seconds (0 = never).",
+    "watchdog": true,
+    "stall_s": 300,
+    "keep_awake": true,
+    "close_tab_after_s": 600
+  },
+  "post_review": {
+    "_note": "Read-only Claude review after cursor and agy auto runs (ckdispatch/postreview.py). OFF since 2026-11-05 (chalach: \"no need review, since those one are for simple stupid task anyways\"). The rule check still runs on every run.",
+    "enabled": false,
+    "timeout_s": 300
+  },
+  "asks": {
+    "_note": "v4 asks (ckdispatch/asks.py, BUILD_SPEC_v4 section 5). required: ck-run run/review need --ask. Budgets per size (the code defaults are the same): runs (incl. fixes), parallel (live at once), reviews (S: 1 only with trigger you-asked), fixes (runs with --parent in the same ask), wall_min, timeout_s (per run, when --timeout is not given), stall_s (watchdog).",
+    "required": true,
+    "budgets": {
+      "S": {"runs": 1, "parallel": 1, "reviews": 0, "fixes": 0, "wall_min": 15, "timeout_s": 600, "stall_s": 180},
+      "M": {"runs": 2, "parallel": 1, "reviews": 1, "fixes": 1, "wall_min": 45, "timeout_s": 1800, "stall_s": 300},
+      "L": {"runs": 6, "parallel": 3, "reviews": 2, "fixes": 2, "wall_min": 180, "timeout_s": 7200, "stall_s": 480}
+    }
+  },
+  "workspaces": {
+    "devfab": {
+      "name": "Device Fabrication",
+      "aliases": ["devfab", "device-fabrication", "DeviceFab", "Device Fabrication"],
+      "root": "~/Library/CloudStorage/OneDrive-WashingtonUniversityinSt.Louis/Documents/PhD/Device Fabrication",
+      "wiki_first": ["Design Library/index.md", "Design Library/maps/ai-retrieval-guide.md"],
+      "open_questions": "Design Library/questions/open-questions.md",
+      "rule_files": [".agents/AGENTS.md", "CLAUDE.md", "Design Library/CLAUDE.md"],
+      "raw_source": "Device Fabrication/.agents/AGENTS.md:78-83 and CLAUDE.md:73-78 ('Raw source folders (read-only unless asked)')",
+      "raw_readonly": [
+        "Projects/CK Design",
+        "Projects/Microwave Design",
+        "Fabrication",
+        "Projects/ESEM",
+        "Projects/Simulation",
+        "Projects/Result",
+        "Idea Inspiration",
+        "Paper",
+        "Material",
+        "Design Yard",
+        "Archive",
+        "Photonics_Ecosystem/repos",
+        "Microwave_Ecosystem/repos"
+      ],
+      "extra_protected_dirs": [".venv", ".claude", ".cursor", ".obsidian"],
+      "writable_only": [],
+      "protected_files": [
+        "AGENTS.md",
+        "CLAUDE.md",
+        ".agents/AGENTS.md",
+        "Design Library/CLAUDE.md",
+        "Design Library/AGENTS.md"
+      ]
+    },
+    "nv": {
+      "name": "NV Compact Magnetometer",
+      "aliases": ["nv", "nv-magnetometer", "NV", "NV Compact Magnetometer"],
+      "root": "~/Library/CloudStorage/OneDrive-WashingtonUniversityinSt.Louis/Documents/PhD/NV Compact Magnetometer",
+      "wiki_first": ["NV Project/index.md", "NV Project/wiki/maps/ai_retrieval_guide.md"],
+      "open_questions": "NV Project/wiki/questions/open_questions.md",
+      "rule_files": ["CLAUDE.md", "NV Project/CLAUDE.md", "AGENTS.md"],
+      "raw_source": "NV Compact Magnetometer/CLAUDE.md:15 ('The rest of this workspace ... holds the raw, human-owned sources') and NV Project/CLAUDE.md 'Raw sources (read-only, never modify)' list",
+      "raw_readonly": [
+        "nv_magnetometer_project",
+        "NV_Magnetometry_Software-main",
+        "NV_ODMR_FPGA_ARM_PS_20260902",
+        "Literature",
+        "System_Design",
+        "IMU",
+        "Patent",
+        "output",
+        "qick",
+        "qick-dawg",
+        "PYNQ",
+        "Archive"
+      ],
+      "extra_protected_dirs": ["qick-dawg (backup)", "qickdawg_venv", "qickdawg_py310", ".claude", ".cursor", ".agents", ".obsidian"],
+      "writable_only": ["NV Project", "AQS"],
+      "protected_files": [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "NV Project/CLAUDE.md",
+        "NV Project/AGENTS.md"
+      ]
+    },
+    "washu": {
+      "name": "WashU HW",
+      "aliases": ["washu", "washu-hw", "WashU", "WashU HW"],
+      "root": "/Users/ckasemtantikul/Downloads/WashU HW",
+      "wiki_first": ["HW Brain/index.md", "HW Brain/maps/ai-retrieval-guide.md"],
+      "open_questions": "HW Brain/questions/open-questions.md",
+      "rule_files": ["CLAUDE.md", "HW Brain/CLAUDE.md"],
+      "raw_source": "WashU HW/CLAUDE.md:67-75 ('Ownership': the user owns the course folders, answers, PDFs and textbooks) and chalach 2026-11-02 (washu task): original course files are read-only; agents edit only <course>/solutions and <course>/prep",
+      "raw_readonly": [],
+      "extra_protected_dirs": [".claude", ".obsidian", ".vscode", "v242"],
+      "writable_only": [
+        "theory II WashU/solutions",
+        "theory II WashU/prep",
+        "quantum II WashU/solutions",
+        "quantum II WashU/prep",
+        "stats mech WashU/solutions",
+        "stats mech WashU/prep",
+        "quantum hardware WashU/solutions",
+        "quantum hardware WashU/prep",
+        "classical mechanics WashU/solutions",
+        "classical mechanics WashU/prep",
+        "quantum information WashU/solutions",
+        "quantum information WashU/prep",
+        "AI physics WashU/solutions",
+        "AI physics WashU/prep"
+      ],
+      "protected_files": [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "HW Brain/CLAUDE.md",
+        "HW Brain/AGENTS.md"
+      ]
+    }
+  }
+}
