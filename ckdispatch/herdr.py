@@ -255,6 +255,18 @@ def send(terminal, text):
         return False, str(exc)
 
 
+BOOKKEEPING_ONLY = {"required reads not shown"}
+
+
+def circle_status(status, problems):
+    """Status for the Herdr circle only (the ledger keeps the real status).
+    A partial run whose only problems are bookkeeping (wiki-first reads not listed) shows done (green);
+    chalach 2026-11-15: yellow must mean the run needs him."""
+    if status == "partial" and problems and set(problems) <= BOOKKEEPING_ONLY:
+        return "ok"
+    return status
+
+
 def state_for(status, approval=False):
     if status in ("ok", "done"):
         return "done"

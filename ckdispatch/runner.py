@@ -1008,7 +1008,7 @@ def _finish(cfg, spec, ws, scopes, run_dir, paths, base, *, started, t0, marker_
         status = "ok"
     notes += problems
     approval = status == "timeout" and (live_info or {}).get("approval_stall", False)
-    herdr.label(run_dir, status, approval=bool(approval))
+    herdr.label(run_dir, herdr.circle_status(status, problems), approval=bool(approval))
 
     if status in ("failed", "partial", "timeout") and (exit_code != 0 or parsed["agent_error"]):
         msg = (stderr[-4000:] + "\n" + (parsed["agent_error"] or ""))

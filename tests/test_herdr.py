@@ -207,6 +207,14 @@ class HerdrTests(unittest.TestCase):
         herdr.label(self.rd, "timeout", approval=True)
         self.assertEqual(self.calls("label")[-1]["argv"][-1], "ck.state=needs")
 
+    def test_bookkeeping_only_partial_circle_is_green(self):
+        self.assertEqual(herdr.circle_status("partial", ["required reads not shown"]), "ok")
+        self.assertEqual(herdr.circle_status("partial", ["required reads not shown", "agent status partial"]), "partial")
+        self.assertEqual(herdr.circle_status("partial", ["no agent summary"]), "partial")
+        self.assertEqual(herdr.circle_status("partial", []), "partial")
+        self.assertEqual(herdr.circle_status("timeout", ["required reads not shown"]), "timeout")
+        self.assertEqual(herdr.state_for(herdr.circle_status("partial", ["required reads not shown"])), "done")
+
     def test_read_send_and_window_tail_use_exact_terminal(self):
         self.control(tail="first\nlast")
         self.assertEqual(live.window_tail("missing-osascript", None, {}, lines=1, herdr_terminal="t-exact"), "last")
