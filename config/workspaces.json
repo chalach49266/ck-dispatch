@@ -22,7 +22,7 @@
     "watchdog": true,
     "stall_s": 300,
     "keep_awake": true,
-    "close_tab_after_s": 600
+    "close_tab_after_s": 300
   },
   "post_review": {
     "_note": "Read-only Claude review after cursor and agy auto runs (ckdispatch/postreview.py). OFF since 2026-11-05 (chalach: \"no need review, since those one are for simple stupid task anyways\"). The rule check still runs on every run.",

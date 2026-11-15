@@ -300,6 +300,9 @@ class Watchdog:
                 p = live.close_tab_later(self.osascript, self.env, session_id=sid, tty=tty,
                                          delay_s=self.close_after, run_dir=self.run_dir)
                 info["tab_closer"] = p is not None
+            elif out.get("state") == "done" and self.act.herdr_terminal and self.close_after > 0:
+                p = herdr.close_later(self.act.herdr_terminal, self.close_after, run_dir=self.run_dir)
+                info["tab_closer"] = p is not None
         except Exception as e:  # closing a tab later is a nicety; it never changes the run's result
             info["error"] = info["error"] or f"tab closer: {type(e).__name__}: {e}"
         out = dict(out)

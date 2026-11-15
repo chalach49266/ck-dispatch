@@ -194,6 +194,10 @@ class HerdrTests(unittest.TestCase):
         p = self.run_live()
         self.assertEqual(p.returncode, 5, p.stderr)
         self.assertEqual(self.state()["terminals"][0]["labels"]["ck.state"], "failed")
+        # green right when the agent finished, then the final check turned it red
+        labels = [c["argv"][-1] for c in self.calls("label")]
+        self.assertEqual(labels[0], "ck.state=done")
+        self.assertEqual(labels[-1], "ck.state=failed")
 
     def test_watchdog_approval_stall_yellow_other_stall_red(self):
         self.sb.set_live(watchdog=True, stall_s=0.4)
@@ -210,7 +214,7 @@ class HerdrTests(unittest.TestCase):
     def test_state_mapping_and_label_exact_target(self):
         self.open()
         for status in ("ok", "done", "partial", "needs-you", "blocked", "failed", "timeout", "stalled", "flagged", "violation"):
-            expected = "done" if status in ("ok", "done") else "needs" if status in ("partial", "needs-you", "blocked") else "failed"
+            expected = "done" if status in ("ok", "done") else "needs" if status in ("partial", "needs-you", "blocked", "flagged") else "failed"
             herdr.label(self.rd, status)
             self.assertEqual(self.calls("label")[-1]["argv"], ["label", "--json", "t-run-1", "ck.state=" + expected])
         herdr.label(self.rd, "timeout", approval=True)
@@ -223,6 +227,30 @@ class HerdrTests(unittest.TestCase):
         self.assertEqual(herdr.circle_status("partial", []), "partial")
         self.assertEqual(herdr.circle_status("timeout", ["required reads not shown"]), "timeout")
         self.assertEqual(herdr.state_for(herdr.circle_status("partial", ["required reads not shown"])), "done")
+
+    def test_herdr_closer_closes_only_unused_ck_panes(self):
+        self.assertIsNone(herdr.close_later("t1", 0))
+        with mock.patch.object(herdr.subprocess, "Popen") as popen:
+            herdr.close_later("t1", 300, run_dir=str(self.rd))
+        argv = popen.call_args.args[0]
+        self.assertEqual(argv[-3:], ["t1", "300", str(self.rd)])
+        # unchanged screen -> closed; changed screen -> kept
+        for screens, expect in ((["same", "same"], True), (["before", "after"], False)):
+            with mock.patch.object(herdr, "read", side_effect=screens), \
+                 mock.patch.object(herdr, "close_pane") as cp, mock.patch.object(herdr.time, "sleep"):
+                herdr._closer_main(["t1", "0.02", ""])
+            self.assertEqual(cp.called, expect, screens)
+        # a pane without the ck-run label is never touched
+        get = mock.Mock(returncode=0, stdout='{"labels": {"x": "y"}}')
+        with mock.patch.object(herdr, "_hc", return_value=get) as hc:
+            self.assertFalse(herdr.close_pane("t9"))
+        self.assertEqual([c.args[0][0] for c in hc.call_args_list], ["get"])
+        # a ck-run pane: keep off, kill, rm, then re-layout of its main
+        ok = mock.Mock(returncode=0, stdout='{"labels": {"ck-run": "true", "ck.main": "t-main", "herdr.tab": "tab-main"}, "removed": "t9"}')
+        with mock.patch.object(herdr, "_hc", return_value=ok) as hc, mock.patch.object(herdr, "equalize") as eq:
+            self.assertTrue(herdr.close_pane("t9"))
+        self.assertEqual([c.args[0][0] for c in hc.call_args_list], ["get", "keep", "kill", "rm"])
+        eq.assert_called_once_with("tab-main", "t-main", "t9", None)
 
     def test_read_send_and_window_tail_use_exact_terminal(self):
         self.control(tail="first\nlast")
@@ -242,8 +270,11 @@ class HerdrTests(unittest.TestCase):
             wd._stalled(time.monotonic(), 1.1)
             self.assertTrue(wd.resume_sent)
             self.assertIsNotNone(wd.resume_at)
-            wd.finished({"state": "done"})
+            with mock.patch.object(herdr, "close_later") as hclose:
+                wd.finished({"state": "done"})
             close.assert_not_called()
+            hclose.assert_called_once()
+            self.assertEqual(hclose.call_args.args[:2], ("t-run-1", 0.1))
         self.assertEqual(self.calls("read")[-1]["argv"][-1], "t-run-1")
         self.assertEqual(self.calls("send")[-1]["argv"][-2], "t-run-1")
 

@@ -13,6 +13,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 
 STATE_FILE = "live-host.json"
@@ -281,8 +282,8 @@ def circle_status(status, problems):
 def state_for(status, approval=False):
     if status in ("ok", "done"):
         return "done"
-    if status in ("partial", "needs-you", "blocked") or approval:
-        return "needs"
+    if status in ("partial", "needs-you", "blocked", "flagged") or approval:
+        return "needs"  # flagged = the rule check wants chalach to look, not a failure (chalach 2026-11-15)
     return "failed"
 
 
@@ -295,3 +296,127 @@ def label(run_dir, status, approval=False):
             invoke([hc_path(), "label", "--json", terminal, f"ck.state={state_for(status, approval)}"], log)
         except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
             log.write(f"ck-run: Herdr status label failed: {exc}\n")
+
+
+# --- closing a finished run's pane (chalach 2026-11-15: "the 10 minutes rule ... isn't working ... set it to 5")
+REPO = str(Path(__file__).resolve().parent.parent)
+_CLOSER = ("import sys; sys.path.insert(0, sys.argv[1]); from ckdispatch import herdr; "
+           "sys.exit(herdr._closer_main(sys.argv[2:]))")
+
+
+def close_later(terminal, delay_s, run_dir=None):
+    """Close a cleanly finished run's Herdr pane after delay_s in a small detached process (the iTerm rule of
+    live.close_tab_later): only that terminal, and only if its screen did not change in the second half of
+    delay_s (a pane chalach is using stays). The other agent panes of the same main then get equal heights
+    again. delay_s <= 0 = never. Returns the Popen or None."""
+    try:
+        delay_s = float(delay_s)
+    except (TypeError, ValueError):
+        return None
+    if delay_s <= 0 or not terminal:
+        return None
+    argv = [sys.executable, "-I", "-c", _CLOSER, REPO, str(terminal), f"{delay_s:g}", run_dir or ""]
+    try:
+        return subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    except OSError:
+        return None
+
+
+def _closer_main(args):
+    from . import live
+    terminal, delay_s, run_dir = args[0], float(args[1]), (args[2] or None)
+
+    def wait(seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            time.sleep(max(0.01, min(2.0, end - time.monotonic())))
+            if run_dir and not os.path.isdir(run_dir):
+                return False
+        return True
+
+    if not wait(delay_s / 2):
+        return 0
+    base = live.text_signature(read(terminal))
+    if base is None or not wait(delay_s / 2):
+        return 0  # the pane is gone already, or the run folder was removed
+    if live.text_signature(read(terminal)) != base:
+        return 0  # somebody used the pane: keep it
+    if run_dir:
+        with (Path(run_dir) / "herdr.log").open("a") as log:
+            close_pane(terminal, log)
+    else:
+        close_pane(terminal, None)
+    return 0
+
+
+def _hc(args, log=None, timeout=20):
+    try:
+        proc = subprocess.run([hc_path(), *args], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        if log:
+            log.write(f"ck-run: hc {' '.join(args)} failed: {exc}\n")
+        return None
+    if log:
+        log.write(f"$ hc {' '.join(args)}\n{proc.stdout}{proc.stderr}")
+    return proc
+
+
+def close_pane(terminal, log=None):
+    """Remove one CK run terminal: keep off, end its program, remove it; then re-equalize its main's agents."""
+    proc = _hc(["get", "--json", terminal], log)
+    try:
+        labels = json.loads(proc.stdout).get("labels") or {} if proc and proc.returncode == 0 else None
+    except ValueError:
+        labels = None
+    if not labels or labels.get("ck-run") != "true":
+        return False  # gone already, or not a ck-run pane: never touch it
+    _hc(["keep", terminal, "--off"], log)
+    _hc(["kill", terminal], log)
+    removed = False
+    for _ in range(20):
+        proc = _hc(["rm", "--json", terminal], log)
+        if proc and proc.returncode == 0 and "removed" in proc.stdout:
+            removed = True
+            break
+        time.sleep(0.5)
+    if log:
+        log.write(f"ck-run: Herdr pane {terminal} {'closed' if removed else 'NOT closed'} after the close delay\n")
+    if removed and labels.get("ck.main") and labels.get("herdr.tab"):
+        try:
+            equalize(labels["herdr.tab"], labels["ck.main"], terminal, log)
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            if log:
+                log.write(f"ck-run: Herdr re-layout failed: {exc}\n")
+    return removed
+
+
+def equalize(tab_id, main, gone, log=None, timeout=10.0):
+    """After pane `gone` closed: main left half, the remaining CK agents of main stacked right, equal heights."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        doc = doc_rpc("doc.get", {"name": "herdr-app"})
+        value = doc.get("value") or {}
+        tab = next((t for s in value.get("spaces", []) for t in s.get("tabs", []) if t.get("id") == tab_id), None)
+        if tab is None:
+            return False
+        if gone in {leaf.get("content", {}).get("terminal") for leaf in _leaves(tab["root"])}:
+            time.sleep(0.4)  # the app has not dropped the closed pane yet
+            continue
+        listed = invoke([hc_path(), "ls", "--json", "--label", f"ck.main={main}"])
+        agents = {t["address"] for t in listed.get("terminals", [])} - {gone}
+        tree = beside_tree(tab["root"], main, agents)
+        if tree is None:
+            return False  # no agent pane left beside main: the app's own layout is fine
+        tab["root"] = tree
+        try:
+            doc_rpc("doc.set", {"name": "herdr-app", "value": value, "version": doc["version"]})
+        except ValueError as exc:
+            if "conflict" in str(exc):
+                continue
+            raise
+        if log:
+            log.write(f"ck-run: Herdr layout after close: {len(agents)} agent pane(s) right half, equal sizes\n")
+        return True
+    return False
+

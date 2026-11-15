@@ -738,6 +738,10 @@ def _live_phase(cfg, spec, ws, run_dir, paths, lv, env, base=None):
         info["watchdog"] = w["watchdog"]  # what the watchdog saw and did (live.wait_done)
     info["state"] = w["state"]
     info["approval_stall"] = w.get("reason") == "approval"
+    if is_herdr and w["state"] == "done":
+        # green as soon as the agent finished; the final label after the rule check may turn it yellow or red
+        # (the check can take minutes, and Codex's own status can sit at idle/turn 0 = a grey circle meanwhile)
+        herdr.label(run_dir, "ok")
     result_text = _read_text(paths["result_md"])
     if (w["state"] == "exited" and w["exit_code"] not in (None, 0, 130) and not result_text
             and time.time() - t0 < cfg.live_early_exit_s):
