@@ -1,0 +1,29 @@
+Traceback (most recent call last):
+  File "/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/bin/ck-run", line 14, in <module>
+    sys.exit(main(sys.argv[1:]))
+             ^^^^^^^^^^^^^^^^^^
+  File "/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/ckdispatch/cli.py", line 401, in main
+    return a.func(cfg, a)
+           ^^^^^^^^^^^^^^
+  File "/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/ckdispatch/cli.py", line 211, in cmd_run
+    return execute(cfg, spec, dry_run=a.dry_run)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/ckdispatch/runner.py", line 496, in execute
+    spec.over_info = asks.gate(cfg, spec, base=dict(base, **who), dry_run=True)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/ckdispatch/asks.py", line 499, in gate
+    u = usage(cfg, ask_id, events)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/ckdispatch/asks.py", line 312, in usage
+    live_records, _ = claims.active(cfg.runs_dir)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/ckdispatch/claims.py", line 311, in active
+    with _registry(runs_dir, create=clean) as d:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/anaconda3/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/ckdispatch/claims.py", line 146, in _registry
+    fd = os.open(os.path.join(d, REGISTRY_LOCK), os.O_RDWR | os.O_CREAT, 0o600)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+PermissionError: [Errno 1] Operation not permitted: '/Users/ckasemtantikul/PhD_local/agent_runs/.claims/registry.lock'

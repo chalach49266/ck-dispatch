@@ -19,7 +19,7 @@ from unittest import mock
 from helpers import REPO
 from test_watchdog import V4_KEYS, alive, kill_group, v4_sandbox, wait_for
 
-from ckdispatch import cli, launch, ledger
+from ckdispatch import cli, herdr, launch, ledger
 from ckdispatch.config import Config
 from ckdispatch.errors import Refused
 
@@ -99,7 +99,8 @@ class TestLaunchFile(LaunchBase):
         lines = open(info["sh"]).read().splitlines()
         self.assertEqual(lines[0], "#!/bin/bash")
         body = [ln for ln in lines[1:] if ln.strip() and not ln.startswith("#")]
-        self.assertEqual(len(body), 1, lines)
+        self.assertEqual(len(body), 2, lines)
+        self.assertEqual(body.pop(0), "export CK_RUN_HOST=" + shlex.quote(herdr.detect_host(self.cfg.live_terminal)))
         want = RUN + ["--prompt-file", pf, "--interactive"]
         self.assertEqual(body[0], f"cd {shlex.quote(self.sb.devfab)} && {shlex.quote(stub)} "
                                   f"{' '.join(shlex.quote(a) for a in want)} \"$@\"")

@@ -584,3 +584,35 @@ examples/sample_task.md     a task file for --dry-run
 
 `route.parse_reset()` is ported from AgwaB/grok-bot-agents at commit `0aa87fc` (MIT); see
 `LICENSE-THIRD-PARTY`. Nothing else is copied from that repo, and the plugin is not installed.
+
+## Live terminal host
+
+A live run started inside Herdr (`HC_TERMINAL_ID` set) opens beside that main
+terminal: main on the left half, agents stacked equally on the right. Other
+panes stay under the main pane. Outside Herdr, the configured terminal behavior
+is unchanged. `ck-run launch` records the host as `export CK_RUN_HOST=...` in its
+shell script, so running that script again uses the original host.
+
+For an explicit override, use `CK_RUN_HOST=iterm` or
+`CK_RUN_HOST=herdr:<main-terminal-id>` before the command. A missing main opens a
+new tab in the CK space. An unavailable hc/app falls back to the configured
+terminal path; diagnostics are retained in the run's `herdr.log` and ledger.
+Layout updates use the version-checked `herdr-app` core document under a shared
+launch lock. Placement failure after a successful launch retains the terminal
+and logs a warning.
+
+`live-host.json` saves the actual terminal address for watchdog reads, resume
+sends and reattach. Herdr panes stay open. Final `ck.state` labels are `done`
+for successful runs, `needs` for partial/needs-you or approval stalls, and
+`failed` for errors, timeouts, other stalls, flags or violations. The installed
+Herdr mods display these as green, yellow and red circles.
+
+Preview without starting a terminal or agent:
+
+```sh
+HC_TERMINAL_ID=t-example bin/ck-run run --model sol --workspace devfab \
+  --title 'Host preview' --prompt-file examples/sample_task.md --dry-run
+```
+
+The offline suite uses `tests/fake_herdr.py` as both hc and herdr-app. It never
+contacts the real core or opens a real terminal.

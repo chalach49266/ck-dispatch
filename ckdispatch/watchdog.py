@@ -32,7 +32,7 @@ import stat
 import sys
 import time
 
-from . import ledger, live, route
+from . import herdr, ledger, live, route
 
 STALL_DEFAULT_S = 300.0
 SAMPLE_MAX_S = 30.0    # read the session store / the window at most this often
@@ -104,10 +104,11 @@ class Activity:
     Also used by `ck-run reattach`'s waiter to see that a finished agent sits idle."""
 
     def __init__(self, run_dir: str, *, agent: str, run_id: str, home: str, osascript: str, env, iterm: bool,
-                 window_id=None, session_id=None, every: float = SAMPLE_MAX_S):
+                 window_id=None, session_id=None, herdr_terminal=None, every: float = SAMPLE_MAX_S):
         self.run_dir, self.agent, self.run_id, self.home = run_dir, agent or "", run_id, home
         self.osascript, self.env, self.iterm = osascript, env, iterm
         self.window_id, self.session_id, self.every = window_id, session_id, max(0.05, float(every))
+        self.herdr_terminal = herdr_terminal or herdr.saved(run_dir).get("terminal")
         self.since = self._since()
         self.dir_sig = self._dir_sig()
         self.store_sig = self.store_at = None
@@ -200,7 +201,8 @@ class Activity:
         """True if the window text changed since the last sample (timers and spinners ignored)."""
         self.tail_at = now
         sid, tty = self.target()
-        text = live.session_text(self.osascript, self.env, session_id=sid, tty=tty, window_id=self.window_id)
+        kw = {"herdr_terminal": self.herdr_terminal} if self.herdr_terminal else {}
+        text = live.session_text(self.osascript, self.env, session_id=sid, tty=tty, window_id=self.window_id, **kw)
         if text is None:
             return False
         sig = live.text_signature(text)
@@ -220,7 +222,7 @@ class Activity:
         if idle >= self.every:
             if self.due(self.store_at, now) and self.sample_store(now):
                 return True
-            if self.iterm and self.due(self.tail_at, now) and self.sample_tail(now):
+            if (self.iterm or self.herdr_terminal) and self.due(self.tail_at, now) and self.sample_tail(now):
                 return True
         return False
 
@@ -256,7 +258,8 @@ class Watchdog:
         every = min(SAMPLE_MAX_S, max(float(poll_s), self.stall_s / 6)) if self.stall_s > 0 else SAMPLE_MAX_S
         self.act = Activity(run_dir, agent=self.agent, run_id=self.run_id, home=w.get("home") or os.path.expanduser("~"),
                             osascript=self.osascript, env=self.env, iterm=live._is_iterm(self.terminal),
-                            window_id=w.get("window_id"), session_id=w.get("session_id"), every=every)
+                            window_id=w.get("window_id"), session_id=w.get("session_id"),
+                            herdr_terminal=w.get("herdr_terminal"), every=every)
         now = time.monotonic()
         self.last_activity = now
         self._wall, self._mono = time.time(), now
@@ -292,7 +295,7 @@ class Watchdog:
                 "slept_s": round(self.slept_s, 1), "keep_awake": self.awake is not None, "tab_closer": False,
                 "error": self.error}
         try:
-            if out.get("state") == "done" and self.act.iterm and self.close_after > 0:
+            if out.get("state") == "done" and self.act.iterm and not self.act.herdr_terminal and self.close_after > 0:
                 sid, tty = self.act.target()
                 p = live.close_tab_later(self.osascript, self.env, session_id=sid, tty=tty,
                                          delay_s=self.close_after, run_dir=self.run_dir)
@@ -338,19 +341,21 @@ class Watchdog:
         return None
 
     def _stalled(self, now: float, idle: float) -> None:
-        reason, line = classify(self.act.tail_text if self.act.iterm else None)
+        reason, line = classify(self.act.tail_text if (self.act.iterm or self.act.herdr_terminal) else None)
         self.last_reason = reason
         if reason == "sleep":
             if not self.resume_sent:
                 self.resume_sent = True  # at most once per run, whatever happens next
                 sid, tty = self.act.target()
-                ok, err = (live.send_text(self.osascript, self.env, RESUME_TEXT, session_id=sid, tty=tty)
-                           if self.act.iterm else (False, f"a {self.terminal or 'Terminal'} window (not iTerm2)"))
+                kw = {"herdr_terminal": self.act.herdr_terminal} if self.act.herdr_terminal else {}
+                ok, err = (live.send_text(self.osascript, self.env, RESUME_TEXT, session_id=sid, tty=tty, **kw)
+                           if (self.act.iterm or self.act.herdr_terminal)
+                           else (False, f"a {self.terminal or 'Terminal'} window (not iTerm2)"))
                 if ok:
                     self.resume_at = now
                     self._event("resume_sent", "sleep",
                                 f"the window said: {line[:150]}; typed '{RESUME_TEXT}' + Return into the run's own "
-                                f"tab ({'session ' + sid if sid else tty})")
+                                f"tab ({self.act.herdr_terminal or ('session ' + sid if sid else tty)})")
                     time.sleep(0.3)
                     self.act.rebaseline_tail(time.monotonic())  # our keystrokes are not the agent's activity
                     return
@@ -396,7 +401,7 @@ class Watchdog:
         return f"{who}: no activity for {duration(self.stall_s)}{what}. {stop}"
 
     def _stop(self, idle: float) -> dict:
-        reason = self.last_reason or classify(self.act.tail_text if self.act.iterm else None)[0]
+        reason = self.last_reason or classify(self.act.tail_text if (self.act.iterm or self.act.herdr_terminal) else None)[0]
         res = live.stop(self.run_dir)
         self._event("watchdog_stop", reason,
                     f"no activity for {int(idle)} s (stall_s {self.stall_s:g}, last reason {reason}); "

@@ -1,0 +1,74 @@
+test_claude_live_settings_open_only_the_own_run_folder (test_live.TestLiveArgv.test_claude_live_settings_open_only_the_own_run_folder) ... /Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_live.py:139: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-ft2_gp_d/home/PhD_local/agent_runs/2026-11-02T120000-devfab-general-x-abcd/claude-settings-live.json' mode='r' encoding='UTF-8'>
+  deny = json.load(open(p))["permissions"]["deny"]
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_live.py:151: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-ft2_gp_d/home/PhD_local/agent_runs/2026-11-02T120000-devfab-general-x-abcd/claude-settings.json' mode='r' encoding='UTF-8'>
+  self.assertIn(f"Edit(/{runs}/**)", json.load(open(h))["permissions"]["deny"])
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_codex_approval_policy_allowlist (test_live.TestLiveArgv.test_codex_approval_policy_allowlist) ... ok
+test_find_session_and_recover (test_live.TestLiveArgv.test_find_session_and_recover) ... /Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_live.py:162: ResourceWarning: unclosed file <_io.TextIOWrapper name='/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/schema/result.schema.json' mode='r' encoding='UTF-8'>
+  schema_prompt = f"RUN: {rid} | agent: codex | kind: dispatch\n\"summary\" ...\n```json\n{json.dumps(json.load(open(RESULT_SCHEMA)))}\n```"
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_launcher_script (test_live.TestLiveArgv.test_launcher_script) ... ok
+test_per_agent_shape (test_live.TestLiveArgv.test_per_agent_shape) ... ok
+test_same_permission_flags_interactive_and_no_forbidden_token (test_live.TestLiveArgv.test_same_permission_flags_interactive_and_no_forbidden_token) ... ok
+test_agent_error_exit_right_away_falls_back (test_live.TestLiveFallback.test_agent_error_exit_right_away_falls_back) ... ok
+test_dry_run_shows_both_commands_and_opens_nothing (test_live.TestLiveFallback.test_dry_run_shows_both_commands_and_opens_nothing) ... ok
+test_no_live_never_opens_a_window (test_live.TestLiveFallback.test_no_live_never_opens_a_window) ... ok
+test_osascript_failure_falls_back_to_headless (test_live.TestLiveFallback.test_osascript_failure_falls_back_to_headless) ... ok
+test_window_that_never_starts_falls_back (test_live.TestLiveFallback.test_window_that_never_starts_falls_back) ... ok
+test_agent_left_without_output_is_failed (test_live.TestLiveRuns.test_agent_left_without_output_is_failed) ... ok
+test_each_agent_runs_interactively_in_a_window (test_live.TestLiveRuns.test_each_agent_runs_interactively_in_a_window) ... /Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_live.py:199: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-taqz35j7/home/PhD_local/agent_runs/2026-11-15T132441-devfab-general-claude-1f3a/summary.md' mode='r' encoding='UTF-8'>
+  self.assertEqual(out[1:], open(out[0]).read().splitlines())
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_live.py:225: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-taqz35j7/home/PhD_local/agent_runs/2026-11-15T132441-devfab-general-claude-1f3a/result.md' mode='r' encoding='UTF-8'>
+  self.assertTrue(open(os.path.join(rd, "result.md")).read().startswith("# Live answer"))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_live.py:199: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-taqz35j7/home/PhD_local/agent_runs/2026-11-15T132441-devfab-general-codex-9bb1/summary.md' mode='r' encoding='UTF-8'>
+  self.assertEqual(out[1:], open(out[0]).read().splitlines())
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_live.py:225: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-taqz35j7/home/PhD_local/agent_runs/2026-11-15T132441-devfab-general-codex-9bb1/result.md' mode='r' encoding='UTF-8'>
+  self.assertTrue(open(os.path.join(rd, "result.md")).read().startswith("# Live answer"))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_live.py:199: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-taqz35j7/home/PhD_local/agent_runs/2026-11-15T132442-devfab-general-cursor-c9f0/summary.md' mode='r' encoding='UTF-8'>
+  self.assertEqual(out[1:], open(out[0]).read().splitlines())
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_live.py:225: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-taqz35j7/home/PhD_local/agent_runs/2026-11-15T132442-devfab-general-cursor-c9f0/result.md' mode='r' encoding='UTF-8'>
+  self.assertTrue(open(os.path.join(rd, "result.md")).read().startswith("# Live answer"))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_live.py:199: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-taqz35j7/home/PhD_local/agent_runs/2026-11-15T132443-devfab-general-agy-42db/summary.md' mode='r' encoding='UTF-8'>
+  self.assertEqual(out[1:], open(out[0]).read().splitlines())
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_live.py:225: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-taqz35j7/home/PhD_local/agent_runs/2026-11-15T132443-devfab-general-agy-42db/result.md' mode='r' encoding='UTF-8'>
+  self.assertTrue(open(os.path.join(rd, "result.md")).read().startswith("# Live answer"))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_long_agent_summary_is_cut (test_live.TestLiveRuns.test_long_agent_summary_is_cut) ... /Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_live.py:247: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-f7nblg0s/home/PhD_local/agent_runs/2026-11-15T132443-devfab-general-codex-a919/summary.md' mode='r' encoding='UTF-8'>
+  self.assertEqual(len(open(os.path.join(self.rd(p), "summary.md")).read().splitlines()), 10)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_quitting_with_ctrl_c_after_summary_is_still_ok (test_live.TestLiveRuns.test_quitting_with_ctrl_c_after_summary_is_still_ok) ... ok
+test_recovered_from_session_log_when_agent_cannot_write (test_live.TestLiveRuns.test_recovered_from_session_log_when_agent_cannot_write) ... ok
+test_review_runs_live (test_live.TestLiveRuns.test_review_runs_live) ... ok
+test_rulecheck_still_applies (test_live.TestLiveRuns.test_rulecheck_still_applies) ... ok
+test_timeout_stops_the_agent_in_the_window (test_live.TestLiveRuns.test_timeout_stops_the_agent_in_the_window) ... ok
+test_default_profile_means_title_not_locked (test_live.TestLiveWindowIdentity.test_default_profile_means_title_not_locked) ... /Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_live.py:449: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-uf_nf641/home/PhD_local/agent_runs/2026-11-15T132453-devfab-general-codex-05f6/live.sh' mode='r' encoding='UTF-8'>
+  sh = open(os.path.join(self.rd(p), "live.sh")).read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_iterm_failure_tries_terminal_then_falls_back (test_live.TestLiveWindowIdentity.test_iterm_failure_tries_terminal_then_falls_back) ... ok
+test_iterm_profiles_lock_the_title_and_color_each_agent (test_live.TestLiveWindowIdentity.test_iterm_profiles_lock_the_title_and_color_each_agent) ... /Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_live.py:431: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-fvk7ohmv/home/Library/Application Support/iTerm2/DynamicProfiles/ck-run-live.json' mode='r' encoding='UTF-8'>
+  prof = json.load(open(path))["Profiles"]
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_iterm_runs_the_launcher_as_its_command (test_live.TestLiveWindowIdentity.test_iterm_runs_the_launcher_as_its_command) ... ok
+test_launcher_holds_the_window_only_in_a_real_terminal (test_live.TestLiveWindowIdentity.test_launcher_holds_the_window_only_in_a_real_terminal) ... ok
+test_scripts_return_id_and_how_without_the_tab_keyword (test_live.TestLiveWindowIdentity.test_scripts_return_id_and_how_without_the_tab_keyword) ... ok
+test_title_format (test_live.TestLiveWindowIdentity.test_title_format) ... ok
+test_window_that_never_starts_reports_what_it_shows (test_live.TestLiveWindowIdentity.test_window_that_never_starts_reports_what_it_shows) ... ok
+
+----------------------------------------------------------------------
+Ran 27 tests in 35.679s
+
+OK

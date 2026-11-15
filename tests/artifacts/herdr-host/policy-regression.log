@@ -1,0 +1,7 @@
+test_words_are_quoted_verbatim (test_policy.TestPolicyFile.test_words_are_quoted_verbatim)
+chalach's words appear exactly (spaces aside) in README.md, PROGRESS.md or the build spec; words that no ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.001s
+
+OK

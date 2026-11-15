@@ -1,0 +1,32 @@
+test_app_failure_falls_back_to_iterm (test_herdr.HerdrTests.test_app_failure_falls_back_to_iterm) ... ok
+test_concurrent_launches_serialized (test_herdr.HerdrTests.test_concurrent_launches_serialized) ... ok
+test_final_rulecheck_violation_overrides_done (test_herdr.HerdrTests.test_final_rulecheck_violation_overrides_done) ... ok
+test_hc_run_failure_falls_back_to_iterm (test_herdr.HerdrTests.test_hc_run_failure_falls_back_to_iterm) ... ok
+test_herdr_dry_run_makes_no_transport_calls (test_herdr.HerdrTests.test_herdr_dry_run_makes_no_transport_calls) ... ok
+test_host_detection_and_explicit_override (test_herdr.HerdrTests.test_host_detection_and_explicit_override) ... ok
+test_launch_records_host_survives_different_caller (test_herdr.HerdrTests.test_launch_records_host_survives_different_caller) ... ok
+test_layout_equal_agents_other_panes_kept (test_herdr.HerdrTests.test_layout_equal_agents_other_panes_kept) ... ok
+test_layout_failure_retains_started_terminal (test_herdr.HerdrTests.test_layout_failure_retains_started_terminal) ... ok
+test_layout_preserves_nonterminal_panes_and_other_tabs (test_herdr.HerdrTests.test_layout_preserves_nonterminal_panes_and_other_tabs) ... ok
+test_live_completion_status_and_child_identity (test_herdr.HerdrTests.test_live_completion_status_and_child_identity) ... ok
+test_missing_hc_falls_back_to_iterm (test_herdr.HerdrTests.test_missing_hc_falls_back_to_iterm) ... ok
+test_missing_main_creates_ck_space_and_new_tab (test_herdr.HerdrTests.test_missing_main_creates_ck_space_and_new_tab) ... ok
+test_read_send_and_window_tail_use_exact_terminal (test_herdr.HerdrTests.test_read_send_and_window_tail_use_exact_terminal) ... ok
+test_reattach_finalizes_saved_host_without_current_herdr_env (test_herdr.HerdrTests.test_reattach_finalizes_saved_host_without_current_herdr_env) ... /Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/ckdispatch/live.py:984: ResourceWarning: unclosed scandir iterator <posix.ScandirIterator object at 0x105534f30>
+  break
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_run_argv_labels_and_slug (test_herdr.HerdrTests.test_run_argv_labels_and_slug) ... ok
+test_state_mapping_and_label_exact_target (test_herdr.HerdrTests.test_state_mapping_and_label_exact_target) ... ok
+test_version_conflict_rereads_preserves_concurrent_pane (test_herdr.HerdrTests.test_version_conflict_rereads_preserves_concurrent_pane) ... ok
+test_watchdog_and_reattach_read_saved_terminal_no_autoclose (test_herdr.HerdrTests.test_watchdog_and_reattach_read_saved_terminal_no_autoclose) ... ok
+test_watchdog_approval_stall_yellow_other_stall_red (test_herdr.HerdrTests.test_watchdog_approval_stall_yellow_other_stall_red) ... ok
+test_written_launch_script_pins_host_when_rerun (test_herdr.HerdrTests.test_written_launch_script_pins_host_when_rerun) ... /opt/anaconda3/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 42166 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+
+----------------------------------------------------------------------
+Ran 21 tests in 20.875s
+
+OK

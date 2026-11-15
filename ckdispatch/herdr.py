@@ -1,0 +1,274 @@
+"""Herdr live transport. Layout helpers adapted from ck-herdr (9b7d1cd).
+
+Only the selected terminal is read/sent/labeled. No pane is automatically closed.
+"""
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import subprocess
+import time
+
+STATE_FILE = "live-host.json"
+
+
+def detect_host(configured, environ=None):
+    """An explicit recorded host wins over the current calling terminal."""
+    env = os.environ if environ is None else environ
+    override = env.get("CK_RUN_HOST")
+    if override:
+        if override == "herdr" or override.startswith("herdr:"):
+            main = override.partition(":")[2] or env.get("HC_TERMINAL_ID", "")
+            return "herdr:" + main
+        if override.lower() in ("iterm", "iterm2", "terminal"):
+            return override
+        raise ValueError(f"invalid CK_RUN_HOST: {override!r}")
+    main = env.get("HC_TERMINAL_ID")
+    return "herdr:" + main if main else configured
+
+
+def hc_path():
+    return os.environ.get("CK_HERDR_HC") or shutil.which("hc") or str(Path.home() / ".local/bin/hc")
+
+
+def app_path():
+    return os.environ.get("CK_HERDR_APP") or shutil.which("herdr-app") or str(Path.home() / ".local/bin/herdr-app")
+
+
+def safe_name(run_id):
+    # hc names are lowercase, limited to 32 characters. Retain uniqueness after shortening.
+    slug = re.sub(r"[^a-z0-9_-]", "-", run_id.lower())
+    return "ck-" + slug[:19] + "-" + hashlib.sha256(run_id.encode()).hexdigest()[:8]
+
+
+def saved(run_dir):
+    try:
+        data = json.loads((Path(run_dir) / STATE_FILE).read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save(run_dir, data):
+    path = Path(run_dir) / STATE_FILE
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.replace(path)
+
+
+def space_label(runs_dir, log):
+    """Called under the launch lock: resolve/create the CK space like ck-herdr."""
+    def lookup():
+        spaces = invoke([app_path(), "ls"], log)["spaces"]
+        return next((s["id"] for s in spaces if s.get("name") == "CK"), None)
+    space = lookup()
+    if not space:
+        invoke([app_path(), "do", "space.new", "--name", "CK", "--folder", str(runs_dir)], log)
+        space = lookup()
+    if not isinstance(space, str) or not space:
+        raise ValueError("CK space has no ID")
+    return ["--label", f"herdr.space={space}"]
+
+
+def home_pane(main, log):
+    """The Herdr space/tab/pane that shows terminal `main` (the agent that launches), or None."""
+    try:
+        for space in invoke([app_path(), "ls"], log)["spaces"]:
+            for tab in space.get("tabs", []):
+                for term in tab.get("terminals", []):
+                    if term.get("terminal") == main:
+                        return space["id"], tab["id"], term.get("pane")
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def doc_rpc(method, params):
+    """One JSON-RPC call to herdr-core (hc connect). The app keeps its splits in the doc 'herdr-app'."""
+    req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}) + "\n"
+    proc = subprocess.run([hc_path(), "connect", "--json"], input=req, capture_output=True, text=True, timeout=15)
+    for line in proc.stdout.splitlines():
+        try:
+            data = json.loads(line)
+        except ValueError:
+            continue
+        if data.get("id") == 1:
+            if "error" in data:
+                raise ValueError(f"{method}: {data['error']}")
+            return data["result"]
+    raise ValueError(f"{method}: no reply from hc connect (exit {proc.returncode})")
+
+
+def _leaves(node):
+    if node.get("type") == "block":
+        yield node
+    for child in node.get("children", []):
+        yield from _leaves(child)
+
+
+def _node_id():
+    return "s" + os.urandom(16).hex()
+
+
+def beside_tree(root, main, agents):
+    """The tab's new split tree: main on the left half, the agents stacked in the right half, equal sizes.
+    Other panes in the tab stay, under main in the left half. None when main is not in the tab."""
+    leaves = list(_leaves(root))
+    main_leaf = next((leaf for leaf in leaves if leaf.get("content", {}).get("terminal") == main), None)
+    right = [leaf for leaf in leaves if leaf.get("content", {}).get("terminal") in agents]
+    if main_leaf is None or not right:
+        return None
+    others = [leaf for leaf in leaves if leaf is not main_leaf and leaf not in right]
+    one = {"weight": 1.0}
+    left = dict(main_leaf, size=one)
+    if others:
+        left = {"type": "column", "id": _node_id(), "size": one,
+                "children": [dict(leaf, size=one) for leaf in [main_leaf, *others]]}
+    column = {"type": "column", "id": _node_id(), "size": one,
+              "children": [dict(leaf, size=one) for leaf in right]}
+    return {"type": "row", "id": root["id"], "children": [left, column]}
+
+
+def arrange_beside(tab_id, main, new, log, timeout=20.0):
+    """Wait until Herdr shows terminal `new` in tab `tab_id`, then lay the tab out: main left half, every
+    CK agent of this main (label ck.main=<main>) in the right half, equal heights. The doc write is
+    version-checked (a conflict re-reads and retries). Returns True when the layout was written."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        doc = doc_rpc("doc.get", {"name": "herdr-app"})
+        value = doc.get("value") or {}
+        tab = next((t for s in value.get("spaces", []) for t in s.get("tabs", []) if t.get("id") == tab_id), None)
+        if tab is None:
+            raise ValueError(f"tab {tab_id} not found in the Herdr doc")
+        if new not in {leaf.get("content", {}).get("terminal") for leaf in _leaves(tab["root"])}:
+            time.sleep(0.4)  # the app has not adopted the new terminal yet
+            continue
+        listed = invoke([hc_path(), "ls", "--json", "--label", f"ck.main={main}"])
+        agents = {t["address"] for t in listed.get("terminals", [])} | {new}
+        tree = beside_tree(tab["root"], main, agents)
+        if tree is None:
+            return False
+        tab["root"] = tree
+        try:
+            doc_rpc("doc.set", {"name": "herdr-app", "value": value, "version": doc["version"]})
+        except ValueError as exc:
+            if "conflict" in str(exc):
+                continue  # somebody else changed the layout: read again
+            raise
+        log.write(f"ck-run: Herdr layout: {main} left half, {len(agents)} agent pane(s) right half, equal sizes\n")
+        return True
+    raise ValueError(f"Herdr did not show terminal {new} in the main tab within {timeout:.0f} s")
+
+
+def invoke(argv, log=None, timeout=30):
+    if log:
+        log.write("$ " + shlex.join(argv) + "\n")
+        log.flush()
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    if log:
+        log.write(proc.stdout)
+        log.write(proc.stderr)
+        log.flush()
+    try:
+        data = json.loads(proc.stdout)
+    except ValueError:
+        raise ValueError(f"hc returned no JSON (exit {proc.returncode}): {proc.stderr.strip()}")
+    if not isinstance(data, dict):
+        raise ValueError("hc returned a non-object JSON reply")
+    if "error" in data:
+        raise ValueError(str(data["error"]))
+    if proc.returncode:
+        raise ValueError(f"hc failed (exit {proc.returncode}): {proc.stderr.strip()}")
+    return data
+
+
+def run_argv(run_id, cwd, script, main, labels):
+    return [hc_path(), "run", "--json", "--bg", "--outlive-parent", "--name", safe_name(run_id),
+            "--cwd", str(cwd), "--label", "ck-run=true", "--label", f"ck.main={main}",
+            *labels, "--", "/bin/bash", str(script)]
+
+
+def plan(run_id, cwd, script, host):
+    main = host.partition(":")[2]
+    labels = ["--label", "herdr.space=<main's space>", "--label", "herdr.tab=<main's tab>"]
+    return (f"# host: {host}; resolve main with herdr-app ls; absent main -> new tab in CK space\n"
+            + shlex.join(run_argv(run_id, cwd, script, main, labels)) + "\n"
+            + "# layout: main left half, agents stacked right with equal weights; version-checked herdr-app doc.set\n"
+            + "# hc unavailable/failing -> configured iTerm path; Herdr panes retained; final ck.state label")
+
+
+def open_window(run_id, cwd, script, main, runs_dir, run_dir):
+    out = {"ok": False, "error": None, "window_id": None, "terminal": "Herdr", "how": None,
+           "session_id": None, "tab": False, "herdr_terminal": None}
+    with (Path(run_dir) / "herdr.log").open("a") as log:
+        try:
+            # Serialize lookup, creation, launch and layout across all asks in this runs directory.
+            with (Path(runs_dir) / ".herdr-launch.lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                home = home_pane(main, log) if main else None
+                if home:
+                    space, tab, _ = home
+                    labels = ["--label", f"herdr.space={space}", "--label", f"herdr.tab={tab}"]
+                else:
+                    log.write(f"ck-run: main {main!r} not found in Herdr; falling back to new tab in CK space\n")
+                    labels = space_label(runs_dir, log)
+                terminal = invoke(run_argv(run_id, cwd, script, main, labels), log)
+                address = terminal.get("address") or terminal.get("id")
+                if not isinstance(address, str) or not address:
+                    raise ValueError("hc run returned no terminal address")
+                out.update(ok=True, window_id=home[1] if home else None, herdr_terminal=address,
+                           how="Herdr beside main" if home else "Herdr new CK tab", tab=bool(home))
+                save(run_dir, {"host": "herdr:" + main, "terminal": address, "window": out})
+                if home:
+                    try:
+                        if not arrange_beside(home[1], main, address, log):
+                            raise ValueError("main pane disappeared before layout")
+                    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
+                        # The program already exists: never duplicate it because placement failed.
+                        log.write(f"ck-run: Herdr layout warning; terminal retained: {exc}\n")
+        except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
+            out["error"] = str(exc)
+            log.write(f"ck-run: Herdr launch failed; falling back to iTerm path: {exc}\n")
+    return out
+
+
+def read(terminal, lines=100, timeout=20):
+    try:
+        proc = subprocess.run([hc_path(), "read", "--lines", str(lines), terminal],
+                              capture_output=True, text=True, timeout=timeout)
+        return proc.stdout if proc.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def send(terminal, text):
+    try:
+        invoke([hc_path(), "send", "--json", terminal, text])
+        return True, None
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)
+
+
+def state_for(status, approval=False):
+    if status in ("ok", "done"):
+        return "done"
+    if status in ("partial", "needs-you", "blocked") or approval:
+        return "needs"
+    return "failed"
+
+
+def label(run_dir, status, approval=False):
+    terminal = saved(run_dir).get("terminal")
+    if not terminal:
+        return
+    with (Path(run_dir) / "herdr.log").open("a") as log:
+        try:
+            invoke([hc_path(), "label", "--json", terminal, f"ck.state={state_for(status, approval)}"], log)
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            log.write(f"ck-run: Herdr status label failed: {exc}\n")

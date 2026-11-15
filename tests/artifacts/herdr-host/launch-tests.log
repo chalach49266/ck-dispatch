@@ -1,0 +1,53 @@
+/opt/anaconda3/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 42197 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_launch.py:203: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-gdnx7l4k/home/PhD_local/agent_runs/fail-1.out' mode='r' encoding='UTF-8'>
+  self.assertEqual(open(info["out"]).read().splitlines()[-1], "ck-run exit=3")
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+../opt/anaconda3/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 42285 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_launch.py:179: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-x85tnyas/home/PhD_local/agent_runs/slow-1.out' mode='r' encoding='UTF-8'>
+  self.assertTrue(open(info["out"]).read().rstrip().endswith("ck-run exit=0"))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.../Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_launch.py:308: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-r0r19eeo/home/PhD_local/agent_runs/e2e-1.out' mode='r' encoding='UTF-8'>
+  self.assertIn("ck-run exit=0", open(rows["out"]).read())
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_launch.py:317: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-r0r19eeo/home/PhD_local/agent_runs/e2e-1.sh' mode='r' encoding='UTF-8'>
+  self.assertIn(f"--prompt-file {shlex.quote(pf)}", open(rows["sh"]).read())
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+../opt/anaconda3/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 42409 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_launch.py:154: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-fl3rnqh3/home/PhD_local/agent_runs/ask-1.sh' mode='r' encoding='UTF-8'>
+  text = open(info["sh"]).read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+../opt/anaconda3/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 42410 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_launch.py:127: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-m_129uft/home/PhD_local/agent_runs/count-2.sh' mode='r' encoding='UTF-8'>
+  self.assertIn(f"--prompt-file {shlex.quote(pf)}", open(info["sh"]).read())
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+./opt/anaconda3/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 42411 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_launch.py:99: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-16q2_0dy/home/PhD_local/agent_runs/count-1.sh' mode='r' encoding='UTF-8'>
+  lines = open(info["sh"]).read().splitlines()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_launch.py:112: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-16q2_0dy/home/PhD_local/agent_runs/count-1.out' mode='r' encoding='UTF-8'>
+  out = open(info["out"]).read().splitlines()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_launch.py:114: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-16q2_0dy/stubs/ck-run-stub-6.argv' mode='r' encoding='UTF-8'>
+  self.assertEqual(open(argv_file).read().splitlines(), want)  # "$@" adds nothing when launch starts it
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_launch.py:115: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-16q2_0dy/stubs/ck-run-stub-6.cwd' mode='r' encoding='UTF-8'>
+  self.assertEqual(open(cwd_file).read().strip(), self.sb.devfab)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+../opt/anaconda3/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 42415 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.
+----------------------------------------------------------------------
+Ran 13 tests in 16.913s
+
+OK

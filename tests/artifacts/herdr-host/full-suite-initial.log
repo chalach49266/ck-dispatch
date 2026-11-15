@@ -1,0 +1,31 @@
+.......................................................................................................F................................................................................F........................................F..............................................................................................................................................................................................
+======================================================================
+FAIL: test_sh_has_the_header_and_exactly_one_ck_run_line (test_launch.TestLaunchFile.test_sh_has_the_header_and_exactly_one_ck_run_line)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_launch.py", line 102, in test_sh_has_the_header_and_exactly_one_ck_run_line
+    self.assertEqual(len(body), 1, lines)
+AssertionError: 2 != 1 : ['#!/bin/bash', "# ck-run launch count-1 (started detached by ck-run launch; the .out ends with 'ck-run exit=N')", '# what: Count files', '# ask: none', '# chalach (verbatim): (no ask words found)', '# launched: 2026-11-15T13:23:36-06:00', '# out: /private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-cecpn7ej/home/PhD_local/agent_runs/count-1.out', 'export CK_RUN_HOST=Terminal', 'cd \'/private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-cecpn7ej/home/Library/CloudStorage/OneDrive-Test/Documents/PhD/Device Fabrication\' && /private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-cecpn7ej/stubs/ck-run-stub-6 run --agent codex --workspace devfab --title \'Count files\' --mode read --prompt-file /private/var/folders/6w/qvrr65hs68x2bpxh5cdw2nrw0000gn/T/ckrun-test-cecpn7ej/home/PhD_local/agent_runs/count-1_prompt.md --interactive "$@"']
+
+======================================================================
+FAIL: test_words_are_quoted_verbatim (test_policy.TestPolicyFile.test_words_are_quoted_verbatim)
+chalach's words appear exactly (spaces aside) in README.md, PROGRESS.md or the build spec; words that no
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_policy.py", line 66, in test_words_are_quoted_verbatim
+    self.assertTrue(hits, f"{d['id']}: words not found verbatim: {d['words']!r}")
+AssertionError: [] is not true : word-only-notes: words not found verbatim: 'yes you can change the ck-run to treat a word only metion and note and you can always allow those git push and pip install'
+
+======================================================================
+FAIL: test_the_waiter_is_a_real_detached_launch (test_reattach.TestReattachChoices.test_the_waiter_is_a_real_detached_launch)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/ckasemtantikul/PhD_local/ck-dispatch-herdr/tests/test_reattach.py", line 184, in test_the_waiter_is_a_real_detached_launch
+    self.assertTrue(line.endswith(f" reattach {rid} --wait \"$@\""), line)  # no --interactive, no prompt file
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : export CK_RUN_HOST=Terminal
+
+----------------------------------------------------------------------
+Ran 416 tests in 349.351s
+
+FAILED (failures=3)

@@ -67,7 +67,7 @@ from .summarize import extract_structured
 CONTROL_FILES = ("task.md", "prompt.md", "prompt-live.md", "packet.json", "cmd.txt", "claude-settings.json",
                  "claude-settings-live.json", "live.sh", ".marker", "live.claim", "live.pid", "live.exit",
                  "result.json", "rulecheck.json", "stdout.log", "stderr.log", "last.md", "live.tty",
-                 "reattach.lock")
+                 "reattach.lock", "live-host.json", "herdr.log")
 
 # argv after the script lines: <command> <title> <profile>. Neither script activates the app: a window that
 # takes keyboard focus would receive whatever the user is typing at that moment. Both print "<window id>|<how>".
@@ -305,11 +305,14 @@ READ_CAP = 32 * 1024 * 1024
 
 
 def script_text(*, run_dir: str, cwd: str, env: dict, argv: list, prompt_path: str, title: str,
-                agent: str = "") -> str:
+                agent: str = "", herdr_host: bool = False) -> str:
     """Bash launcher that the window runs as its command. The prompt is read from a file, never typed."""
     q = shlex.quote
     env_parts = [f"{k}={q(v)}" for k, v in sorted(env.items()) if k not in ("TERM", "NO_COLOR")]
     env_parts.append('TERM="${TERM:-xterm-256color}"')  # the window's terminal type; colours stay on
+    if herdr_host:
+        # hc assigns the child's own identity. Pass it through env -i so nested ck-run follows Herdr.
+        env_parts.append('HC_TERMINAL_ID="${HC_TERMINAL_ID:-}"')
     if "LANG" not in env:
         env_parts.append("LANG=en_US.UTF-8")
     agent_cmd = " ".join(f'"$(cat {q(prompt_path)})"' if a is PROMPT else q(str(a)) for a in argv)
@@ -493,9 +496,13 @@ def read_tty(run_dir: str | None) -> str | None:
     return t if t.startswith("/dev/") else None
 
 
-def session_text(osascript: str, env: dict, *, session_id=None, tty=None, window_id=None, timeout: int = 20):
+def session_text(osascript: str, env: dict, *, session_id=None, tty=None, window_id=None,
+                 timeout: int = 20, herdr_terminal=None):
     """What an iTerm2 session shows now (its visible text), or None. With session_id or tty: exactly that session
     (tab). Else the current session of window_id (the old way; in a shared window that can be another run's tab)."""
+    if herdr_terminal:
+        from . import herdr
+        return herdr.read(herdr_terminal, timeout=timeout)
     if not _executable(osascript):
         return None
     if session_id or tty:
@@ -510,21 +517,26 @@ def session_text(osascript: str, env: dict, *, session_id=None, tty=None, window
     return text if ok else None
 
 
-def window_tail(osascript: str, window_id, env: dict, lines: int = 6, *, session_id=None, tty=None) -> str | None:
+def window_tail(osascript: str, window_id, env: dict, lines: int = 6, *, session_id=None, tty=None,
+                herdr_terminal=None) -> str | None:
     """The last non-empty lines shown in an iTerm2 window (to explain a window that did not start).
     v4: session_id / tty pick the run's own tab in a shared window."""
-    if not (session_id or tty) and (not window_id or not str(window_id).isdigit()):
+    if not (session_id or tty or herdr_terminal) and (not window_id or not str(window_id).isdigit()):
         return None
-    text = session_text(osascript, env, session_id=session_id, tty=tty, window_id=window_id)
+    kw = {"herdr_terminal": herdr_terminal} if herdr_terminal else {}
+    text = session_text(osascript, env, session_id=session_id, tty=tty, window_id=window_id, **kw)
     if text is None:
         return None
     rows = [r.rstrip() for r in text.splitlines() if r.strip()]
     return " | ".join(rows[-lines:])[-600:] or None
 
 
-def send_text(osascript: str, env: dict, text: str, *, session_id=None, tty=None) -> tuple:
+def send_text(osascript: str, env: dict, text: str, *, session_id=None, tty=None, herdr_terminal=None) -> tuple:
     """Type `text` + Return into ONE iTerm2 session (the run's own tab). (ok, error). Never guesses a session:
     without its id or tty nothing is typed (another run's agent could get the keystrokes)."""
+    if herdr_terminal:
+        from . import herdr
+        return herdr.send(herdr_terminal, text)
     if not (session_id or tty):
         return False, "no exact iTerm2 session (id or tty) to type into"
     if not _executable(osascript):

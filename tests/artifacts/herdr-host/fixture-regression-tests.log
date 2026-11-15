@@ -1,0 +1,8 @@
+test_words_are_quoted_verbatim (test_policy.TestPolicyFile.test_words_are_quoted_verbatim)
+chalach's words appear exactly (spaces aside) in README.md, PROGRESS.md or the build spec; words that no ... ok
+test_the_waiter_is_a_real_detached_launch (test_reattach.TestReattachChoices.test_the_waiter_is_a_real_detached_launch) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.307s
+
+OK

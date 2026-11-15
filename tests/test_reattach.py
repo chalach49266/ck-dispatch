@@ -180,7 +180,8 @@ class TestReattachChoices(ReattachBase):
         slug = ev[0]["slug"]
         self.pids.append(ev[0]["pid"])
         sh = open(os.path.join(self.sb.runs, f"{slug}.sh")).read()
-        line = [ln for ln in sh.splitlines() if ln and not ln.startswith("#")][0]
+        line = [ln for ln in sh.splitlines() if ln.startswith("cd ")][0]
+        self.assertIn("export CK_RUN_HOST=", sh)
         self.assertTrue(line.endswith(f" reattach {rid} --wait \"$@\""), line)  # no --interactive, no prompt file
         self.assertIn(f"# what: reattach waiter for {rid}", sh)
         outp = os.path.join(self.sb.runs, f"{slug}.out")

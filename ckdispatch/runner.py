@@ -22,7 +22,7 @@ import time
 import uuid
 from datetime import datetime
 
-from . import VERSION, asks, claims, ledger, live, models, postreview, route, rulecheck, summarize
+from . import VERSION, herdr, asks, claims, ledger, live, models, postreview, route, rulecheck, summarize
 from . import prompt as P
 from .config import CLAUDE_GUARD_BASE, PACKET_SCHEMA, REPO, RESULT_SCHEMA, Config, Workspace, inside
 from .errors import Refused
@@ -582,7 +582,10 @@ def _prepare_and_run(cfg, spec, ws, scopes, cmd, lv, run_dir, paths, base, claim
                      post_review=cfg.post_review_enabled),
             spec.title, spec.task_text,
             P.footer(run_id=spec.run_id, include_schema=True, schema_path=RESULT_SCHEMA, live_outbox=run_dir))
-        lines += [f"# live (default; --no-live for headless only): an {cfg.live_terminal} window runs {paths['live_sh']},",
+        host = herdr.detect_host(cfg.live_terminal)
+        if host.startswith("herdr:"):
+            lines.append(herdr.plan(spec.run_id, lv["cmd"].cwd, paths["live_sh"], host))
+        lines += [f"# live (default; --no-live for headless only): an {host} window runs {paths['live_sh']},",
                   f"# which starts the interactive CLI with env -i (same env, TERM from the window) and "
                   f"{paths['prompt_live']} as the first message. The command above is the fallback.",
                   redacted(lv["cmd"], RESULT_SCHEMA, paths["prompt_live"])]
@@ -656,23 +659,41 @@ def _live_phase(cfg, spec, ws, run_dir, paths, lv, env, base=None):
             "recover_skipped": None, "summary_text": "",
             "window": None}
     title = live.window_title(spec.agent, spec.title, spec.run_id)
+    host = herdr.detect_host(cfg.live_terminal)
+    is_herdr = host.startswith("herdr:")
     live.write_script(paths["live_sh"], run_dir=run_dir, cwd=lv["cmd"].cwd, env=env, argv=lv["cmd"].argv,
-                      prompt_path=paths["prompt_live"], title=title, agent=spec.agent)
+                      prompt_path=paths["prompt_live"], title=title, agent=spec.agent,
+                      **({"herdr_host": True} if is_herdr else {}))
     profile = ""
-    if cfg.live_terminal.lower() in ("iterm", "iterm2"):
-        _, new_file, perr = live.ensure_iterm_profiles(cfg.home)
-        profile = "" if perr else live.profile_name(spec.agent)
-        if new_file:
-            time.sleep(1.5)  # iTerm2 loads a new dynamic-profile file within about a second
     t0 = time.time()
-    # v4 (BUILD_SPEC_v4 10.5): one iTerm2 window per ask, one tab per run, when live.open_window takes group/state_dir
-    group_kw = {}
-    if spec.ask_id and _accepts(live.open_window, "group", "state_dir"):
-        group_kw = {"group": spec.ask_id, "state_dir": os.path.join(cfg.runs_dir, WINDOWS_DIR)}
-    win = live.open_window(cfg.live_osascript, f"/bin/bash {shlex.quote(paths['live_sh'])}", title, env,
-                           terminal=cfg.live_terminal, profile=profile, **group_kw)
+    win = None
+    if is_herdr:
+        win = herdr.open_window(spec.run_id, lv["cmd"].cwd, paths["live_sh"], host.partition(":")[2],
+                                cfg.runs_dir, run_dir)
+        if not win["ok"]:
+            reason = win["error"]
+            print(f"ck-run: Herdr unavailable; falling back to iTerm path: {reason}", file=sys.stderr)
+            ledger.append(cfg.runs_dir, **base, event="live_host_fallback", status="dispatched", note=reason)
+            win = None
+    if win is None:
+        terminal = cfg.live_terminal if is_herdr else host
+        if terminal.lower() in ("iterm", "iterm2"):
+            _, new_file, perr = live.ensure_iterm_profiles(cfg.home)
+            profile = "" if perr else live.profile_name(spec.agent)
+            if new_file:
+                time.sleep(1.5)
+        if not is_herdr:
+            t0 = time.time()  # preserve the original iTerm timing after profile setup
+        group_kw = {}
+        if spec.ask_id and _accepts(live.open_window, "group", "state_dir"):
+            group_kw = {"group": spec.ask_id, "state_dir": os.path.join(cfg.runs_dir, WINDOWS_DIR)}
+        win = live.open_window(cfg.live_osascript, f"/bin/bash {shlex.quote(paths['live_sh'])}", title, env,
+                               terminal=terminal, profile=profile, **group_kw)
+        # The script is shared with a possibly late hc launch; live.claim still permits only one agent.
+        herdr.save(run_dir, {"host": terminal, "window": win})
     info["window"] = {"terminal": win["terminal"], "window_id": win["window_id"], "how": win["how"], "title": title,
-                      "session_id": win.get("session_id"), "tab": win.get("tab")}
+                      "session_id": win.get("session_id"), "tab": win.get("tab"),
+                      "herdr_terminal": win.get("herdr_terminal")}
     if not win["ok"]:
         live.take_claim(run_dir)  # a window that opens anyway later finds the claim and does nothing
         _live_fallback(cfg, spec, base, info, f"osascript could not open a window: {win['error']}")
@@ -684,7 +705,8 @@ def _live_phase(cfg, spec, ws, run_dir, paths, lv, env, base=None):
                         + f"title locked: {'yes' if locked else 'no'}; title: {title}")[:1000],
                   **{"from": "CK", "to": spec.agent})
     if not live.wait_started(run_dir, cfg.live_start_timeout_s, min(cfg.live_poll_s, 0.5)):
-        tail = live.window_tail(cfg.live_osascript, win["window_id"], env) if win["terminal"] == "iTerm2" else None
+        tail = live.window_tail(cfg.live_osascript, win["window_id"], env) if win["terminal"] == "iTerm2" else (
+            herdr.read(win["herdr_terminal"], lines=6) if win.get("herdr_terminal") else None)
         _live_fallback(cfg, spec, base, info,
                        f"the {win['terminal']} window (id {win['window_id'] or 'unknown'}) did not start the agent "
                        f"within {cfg.live_start_timeout_s:g} s" + (f"; the window shows: {tail}" if tail else ""))
@@ -698,7 +720,7 @@ def _live_phase(cfg, spec, ws, run_dir, paths, lv, env, base=None):
             "window_id": win["window_id"], "terminal": win["terminal"], "env": env, "runs_dir": cfg.runs_dir,
             "run_id": spec.run_id, "ask_id": spec.ask_id, "agent": spec.agent, "title": spec.title,
             # optional keys live.wait_done / watchdog.py read: the tab, HOME for the session stores, config values
-            "session_id": win.get("session_id"), "home": cfg.home,
+            "session_id": win.get("session_id"), "herdr_terminal": win.get("herdr_terminal"), "home": cfg.home,
             "keep_awake": cfg.live_keep_awake, "close_tab_after_s": cfg.live_close_tab_after_s}
     old = signal.signal(signal.SIGTERM, _on_sigterm)
     try:
@@ -715,6 +737,7 @@ def _live_phase(cfg, spec, ws, run_dir, paths, lv, env, base=None):
     if w.get("watchdog") is not None:
         info["watchdog"] = w["watchdog"]  # what the watchdog saw and did (live.wait_done)
     info["state"] = w["state"]
+    info["approval_stall"] = w.get("reason") == "approval"
     result_text = _read_text(paths["result_md"])
     if (w["state"] == "exited" and w["exit_code"] not in (None, 0, 130) and not result_text
             and time.time() - t0 < cfg.live_early_exit_s):
@@ -984,6 +1007,8 @@ def _finish(cfg, spec, ws, scopes, run_dir, paths, base, *, started, t0, marker_
     else:
         status = "ok"
     notes += problems
+    approval = status == "timeout" and (live_info or {}).get("approval_stall", False)
+    herdr.label(run_dir, status, approval=bool(approval))
 
     if status in ("failed", "partial", "timeout") and (exit_code != 0 or parsed["agent_error"]):
         msg = (stderr[-4000:] + "\n" + (parsed["agent_error"] or ""))
@@ -1239,7 +1264,7 @@ def _finalize(cfg: Config, r, op: dict, run_dir: str, note: str) -> int:
         live_info = {"requested": True, "used": True, "window_error": None, "state": state,
                      "session_id": sess["id"], "session_path": sess["path"], "session_how": sess["how"],
                      "session_sure": sess["sure"], "recovered_from_session": recovered, "recover_skipped": skipped,
-                     "summary_text": summary_text, "window": None, "exit_code": exit_code}
+                     "summary_text": summary_text, "window": herdr.saved(run_dir).get("window"), "exit_code": exit_code}
         parsed = {"final_text": final_text, "structured": structured, "actions": [], "observed_reads": [],
                   "session_id": sess["id"], "cost_usd": None, "agent_error": None, "finished_reason": None,
                   "text_only": True}

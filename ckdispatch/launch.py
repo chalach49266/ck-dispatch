@@ -5,7 +5,8 @@
 
 It replaces the hand-made launch (prompt file, .sh with "$@", .out, background job, exit line):
   - <runs_dir>/<slug>.sh: "#!/bin/bash", a comment header (what = title, ask id, chalach's words from the ask,
-    time from ledger.now_iso()), then exactly one line: cd <cwd> && <ck-run> <argv quoted> "$@"
+    time from ledger.now_iso()), an exported CK_RUN_HOST, then one command line:
+    cd <cwd> && <ck-run> <argv quoted> "$@"
   - started as /bin/bash -c '<sh> > <out> 2>&1; echo "ck-run exit=$?" >> <out>' in a new session, stdin/stdout/stderr
     not shared with the caller: launch returns at once and the run goes on after Claude restarts or quits.
   - a run argv needs --prompt-file: an existing file inside runs_dir; without one, <runs_dir>/<slug>_prompt.md is
@@ -26,7 +27,7 @@ import shlex
 import subprocess
 import sys
 
-from . import ledger
+from . import herdr, ledger
 from .config import REPO, Config, inside
 from .errors import Refused
 from .guards import check_ck_argv
@@ -194,6 +195,7 @@ def plan(cfg: Config, slug: str, argv: list, *, ask_id: str | None = None, cwd: 
     title = _title(argv, slug)
     words = ask_words(cfg.runs_dir, ask)
     line = f"cd {shlex.quote(cwd)} && {shlex.quote(CK_RUN)} {' '.join(shlex.quote(a) for a in argv)} \"$@\""
+    host = herdr.detect_host(cfg.live_terminal)
     text = "\n".join(["#!/bin/bash",
                       f"# ck-run launch {slug} (started detached by ck-run launch; the .out ends with 'ck-run exit=N')",
                       *_comment("what", title),
@@ -201,6 +203,7 @@ def plan(cfg: Config, slug: str, argv: list, *, ask_id: str | None = None, cwd: 
                       *_comment("chalach (verbatim)", words if words else "(no ask words found)"),
                       f"# launched: {ledger.now_iso()}",
                       f"# out: {out}",
+                      f"export CK_RUN_HOST={shlex.quote(host)}",
                       line, ""])
     return {"slug": slug, "sh": sh, "out": out, "argv": argv, "cwd": cwd, "ask_id": ask, "title": title,
             "text": text}
