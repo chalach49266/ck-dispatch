@@ -188,10 +188,21 @@ def invoke(argv, log=None, timeout=30):
     return data
 
 
-def run_argv(run_id, cwd, script, main, labels):
+# Herdr picks a pane's icon from the name of the program hc starts. Cursor's CLI starts as `node` with its
+# full path as argv0, so a Cursor/Grok pane showed a plain terminal. Starting the launcher through a bash
+# symlink named `agent` (Cursor's command in Herdr's program table) gives it the Cursor icon (chalach 2026-11-15).
+ICON_SHELLS = {"cursor": Path(__file__).resolve().parent.parent / "bin" / "herdr-icons" / "agent"}
+
+
+def pane_shell(agent):
+    shim = ICON_SHELLS.get(agent or "")
+    return str(shim) if shim and os.access(shim, os.X_OK) else "/bin/bash"
+
+
+def run_argv(run_id, cwd, script, main, labels, agent=None):
     return [hc_path(), "run", "--json", "--bg", "--outlive-parent", "--name", safe_name(run_id),
             "--cwd", str(cwd), "--label", "ck-run=true", "--label", f"ck.main={main}",
-            *labels, "--", "/bin/bash", str(script)]
+            *labels, "--", pane_shell(agent), str(script)]
 
 
 def plan(run_id, cwd, script, host):
@@ -203,7 +214,7 @@ def plan(run_id, cwd, script, host):
             + "# hc unavailable/failing -> configured iTerm path; Herdr panes retained; final ck.state label")
 
 
-def open_window(run_id, cwd, script, main, runs_dir, run_dir):
+def open_window(run_id, cwd, script, main, runs_dir, run_dir, agent=None):
     out = {"ok": False, "error": None, "window_id": None, "terminal": "Herdr", "how": None,
            "session_id": None, "tab": False, "herdr_terminal": None}
     with (Path(run_dir) / "herdr.log").open("a") as log:
@@ -218,7 +229,7 @@ def open_window(run_id, cwd, script, main, runs_dir, run_dir):
                 else:
                     log.write(f"ck-run: main {main!r} not found in Herdr; falling back to new tab in CK space\n")
                     labels = space_label(runs_dir, log)
-                terminal = invoke(run_argv(run_id, cwd, script, main, labels), log)
+                terminal = invoke(run_argv(run_id, cwd, script, main, labels, agent), log)
                 address = terminal.get("address") or terminal.get("id")
                 if not isinstance(address, str) or not address:
                     raise ValueError("hc run returned no terminal address")

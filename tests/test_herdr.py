@@ -77,6 +77,15 @@ class HerdrTests(unittest.TestCase):
         self.assertEqual(herdr.saved(self.rd)["terminal"], out["herdr_terminal"])
         self.assertNotEqual(herdr.safe_name("x" * 100 + "a"), herdr.safe_name("x" * 100 + "b"))
 
+    def test_cursor_pane_starts_through_agent_named_bash(self):
+        shell = herdr.pane_shell("cursor")
+        self.assertEqual(os.path.basename(shell), "agent")
+        self.assertEqual(os.path.realpath(shell), os.path.realpath("/bin/bash"))
+        for agent in ("claude", "codex", "agy", None):
+            self.assertEqual(herdr.pane_shell(agent), "/bin/bash")
+        argv = herdr.run_argv("r", "/tmp", "/x/live.sh", "t-main", [], agent="cursor")
+        self.assertEqual(argv[-2:], [shell, "/x/live.sh"])
+
     def test_layout_equal_agents_other_panes_kept(self):
         self.open("first")
         self.open("second")
