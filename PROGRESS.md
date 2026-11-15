@@ -240,3 +240,38 @@ Existing policy provenance needed by the unchanged policy regression:
 - This is historical test provenance only. This task still forbids pushing or installing.
 - Historical web-search quote, same source file at lines 3-4:
   "Why are you setting all the bots agent deployment web search restriction. I want to clear the restriction. What are other restriction right now".
+
+
+# Progress: rulecheck path flags
+
+Done:
+- Read ck-worker, repo-work, required wiki/rules, source and precedent tests; no missing guide.
+- Confirmed clean rulecheck-paths worktree; live copy and old runs remain read-only.
+- Diagnosed flexcompute in skill paths and _history in sim_history paths (not cache_key.json itself).
+
+Remaining:
+- Apply narrow output-text path exception while retaining sensitive paths and real actions.
+- Add requested regressions and credential-value coverage; run full suite.
+- Replay saved run text read-only, commit locally, then write result.md and summary.md outbox.
+
+Implementation complete:
+- Narrow output-path exemption for flexcompute, tidy3d.web and _history; sensitive locations and actions retained.
+- Added requested synthetic API-value/key-export/token recognition, regression cases and README explanation.
+- Focused pathflag + flagfix suite passes; proof: tests/artifacts/pathflag/focused-tests.log.
+- Saved agent-result replay is clean for both old runs; original files unchanged; proof: tests/artifacts/pathflag/recheck.json.
+- Final source is frozen. Full-suite verification is running in tests/artifacts/pathflag/full-suite-frozen.log.
+- Earlier full-suite processes use full-suite.log and full-suite-final.log; wait for them too; do not duplicate.
+
+Remaining:
+- Read completed final-source full-suite result; verify diff and original-file hashes.
+- Commit only on rulecheck-paths, then write the authorized outbox result.md and summary.md last.
+
+Verification complete:
+- Final frozen-source full suite passed: tests/artifacts/pathflag/full-suite-frozen.log:3-5.
+- Focused suite passed: tests/artifacts/pathflag/focused-tests.log:26-28.
+- Earlier full-suite processes also completed successfully; no active test process remains.
+- Saved run artifacts still match their recorded hashes; both replays clean.
+- Diff whitespace check passed. No missing guide, no live-copy edit, no merge or push.
+- Final local commit and authorized outbox handoff follow this record; see git log and outbox result.md.
+
+Remaining for chalach: nothing. Verification: fake_or_tests.

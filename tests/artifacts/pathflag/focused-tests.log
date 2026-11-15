@@ -1,0 +1,28 @@
+test_path_only_report_exits_ok (test_pathflag.TestPathFlagExitCodes.test_path_only_report_exits_ok) ... ok
+test_true_output_still_exits_flagged (test_pathflag.TestPathFlagExitCodes.test_true_output_still_exits_flagged) ... ok
+test_agent_actions_keep_violations (test_pathflag.TestPathWords.test_agent_actions_keep_violations) ... ok
+test_path_like_strings_in_prose (test_pathflag.TestPathWords.test_path_like_strings_in_prose) ... ok
+test_paths_do_not_hide_other_matches (test_pathflag.TestPathWords.test_paths_do_not_hide_other_matches) ... ok
+test_real_cache_path_and_sim_history_report (test_pathflag.TestPathWords.test_real_cache_path_and_sim_history_report) ... ok
+test_real_skill_path_in_file_lists (test_pathflag.TestPathWords.test_real_skill_path_in_file_lists) ... ok
+test_true_output_cases_still_flag (test_pathflag.TestPathWords.test_true_output_cases_still_flag) ... ok
+test_git_push_and_pip_install_are_allowed_keyword_hits_not_hard_facts (test_flagfix.TestPostreviewUnits.test_git_push_and_pip_install_are_allowed_keyword_hits_not_hard_facts) ... ok
+test_review_prompt_states_chalachs_rule_and_keeps_other_checks (test_flagfix.TestPostreviewUnits.test_review_prompt_states_chalachs_rule_and_keeps_other_checks) ... ok
+test_cursor_auto_git_push_and_pip_install_pass_the_review (test_flagfix.TestReviewedRuns.test_cursor_auto_git_push_and_pip_install_pass_the_review) ... ok
+test_cursor_auto_upload_is_still_a_hard_fact (test_flagfix.TestReviewedRuns.test_cursor_auto_upload_is_still_a_hard_fact) ... ok
+test_allowed_set_is_one_named_constant (test_flagfix.TestRulecheckUnits.test_allowed_set_is_one_named_constant) ... ok
+test_git_push_and_pip_install_actions_are_notes (test_flagfix.TestRulecheckUnits.test_git_push_and_pip_install_actions_are_notes) ... ok
+test_mixed_action_keeps_the_violation_and_notes_the_allowed_part (test_flagfix.TestRulecheckUnits.test_mixed_action_keeps_the_violation_and_notes_the_allowed_part) ... ok
+test_other_push_send_and_heavy_install_actions_stay_violations (test_flagfix.TestRulecheckUnits.test_other_push_send_and_heavy_install_actions_stay_violations) ... ok
+test_word_only_push_and_install_are_notes (test_flagfix.TestRulecheckUnits.test_word_only_push_and_install_are_notes) ... ok
+test_word_only_safety_categories_stay_flags (test_flagfix.TestRulecheckUnits.test_word_only_safety_categories_stay_flags) ... ok
+test_git_clone_and_curl_in_actions_stay_violations (test_flagfix.TestRuns.test_git_clone_and_curl_in_actions_stay_violations) ... ok
+test_git_push_and_pip_install_in_actions_are_notes_exit_0 (test_flagfix.TestRuns.test_git_push_and_pip_install_in_actions_are_notes_exit_0) ... ok
+test_live_word_only_push_and_pip_is_a_note (test_flagfix.TestRuns.test_live_word_only_push_and_pip_is_a_note) ... ok
+test_word_only_credential_is_still_flagged (test_flagfix.TestRuns.test_word_only_credential_is_still_flagged) ... ok
+test_word_only_push_and_pip_in_output_text_is_a_note_exit_0 (test_flagfix.TestRuns.test_word_only_push_and_pip_in_output_text_is_a_note_exit_0) ... ok
+
+----------------------------------------------------------------------
+Ran 23 tests in 6.430s
+
+OK

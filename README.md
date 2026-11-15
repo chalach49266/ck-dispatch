@@ -431,6 +431,10 @@ overrides). The prompt text is not scanned, so a task may talk about these flags
   review that read the agent's own tool calls they become notes), a folder change inside a raw folder (could be a
   delete), or agy printing that `--mode` is not supported in print mode. These three text categories
   (`rulecheck.TEXT_FLAG_CATEGORIES`) stay flags by the Grok Bot stand-in's safety carve-out.
+  Incidental `flexcompute`, `tidy3d.web` and `_history` words inside output file paths (including file lists) are exempt;
+  credential locations such as `.env`, `~/.ssh/id_rsa`, `~/.tidy3d/config` and shell history files still flag.
+  Cloud commands, API-key-looking values, token assignments and `export *_KEY=` still flag in output text;
+  agent-action violations and all other categories keep their existing rules.
 - **notes only**: folder mtime changes elsewhere (often OneDrive sync); push/send, clone/venv/install (and any other
   category) found only in output text: `mentioned in output text only (not a command)` (chalach 2026-11-04: "treat
   a word only mention as note"), e.g. a `git push` proposed under Questions or a `pip install` line in a doc.
