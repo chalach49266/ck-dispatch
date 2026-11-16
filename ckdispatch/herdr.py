@@ -228,6 +228,35 @@ def plan(run_id, cwd, script, host):
             + "# hc unavailable/failing -> configured iTerm path; Herdr panes retained; final ck.state label")
 
 
+# A new pane splits the agents' column, so the panes above it shrink. Codex crashed (ratatui "index outside
+# of buffer") when its pane shrank while it was still starting (A-1115-46). Launches in one runs directory
+# are already serialized by the launch lock; each one now waits until the previous pane had this long to
+# start (chalach 2026-11-15: "sure").
+LAUNCH_GAP_S = float(os.environ.get("CK_HERDR_LAUNCH_GAP_S", "5"))
+LAST_LAUNCH = ".herdr-last-launch"
+
+
+def settle(runs_dir, log=None, gap_s=None):
+    gap = float(os.environ.get("CK_HERDR_LAUNCH_GAP_S", LAUNCH_GAP_S)) if gap_s is None else gap_s
+    try:
+        last = float((Path(runs_dir) / LAST_LAUNCH).read_text().strip() or 0)
+    except (OSError, ValueError):
+        return 0.0
+    wait = min(gap, max(0.0, gap - (time.time() - last)))
+    if wait > 0:
+        if log:
+            log.write(f"ck-run: Herdr waits {wait:.1f} s so the previous agent pane can finish starting\n")
+        time.sleep(wait)
+    return wait
+
+
+def mark_launch(runs_dir):
+    try:
+        (Path(runs_dir) / LAST_LAUNCH).write_text(f"{time.time():.3f}\n")
+    except OSError:
+        pass
+
+
 def open_window(run_id, cwd, script, main, runs_dir, run_dir, agent=None, title=None):
     out = {"ok": False, "error": None, "window_id": None, "terminal": "Herdr", "how": None,
            "session_id": None, "tab": False, "herdr_terminal": None}
@@ -236,6 +265,7 @@ def open_window(run_id, cwd, script, main, runs_dir, run_dir, agent=None, title=
             # Serialize lookup, creation, launch and layout across all asks in this runs directory.
             with (Path(runs_dir) / ".herdr-launch.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
+                settle(runs_dir, log)
                 home = home_pane(main, log) if main else None
                 if home:
                     space, tab, _ = home
@@ -257,6 +287,7 @@ def open_window(run_id, cwd, script, main, runs_dir, run_dir, agent=None, title=
                     except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
                         # The program already exists: never duplicate it because placement failed.
                         log.write(f"ck-run: Herdr layout warning; terminal retained: {exc}\n")
+                mark_launch(runs_dir)
         except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
             out["error"] = str(exc)
             log.write(f"ck-run: Herdr launch failed; falling back to iTerm path: {exc}\n")

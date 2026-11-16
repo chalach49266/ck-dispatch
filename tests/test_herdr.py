@@ -29,7 +29,8 @@ class HerdrTests(unittest.TestCase):
             p.write_text(f"#!{sys.executable}\n" + src)
             p.chmod(0o755)
         self.env = self.sb.env(HC_TERMINAL_ID="t-main", CK_HERDR_HC=str(Path(self.sb.stubs) / "hc"),
-                               CK_HERDR_APP=str(Path(self.sb.stubs) / "herdr-app"))
+                               CK_HERDR_APP=str(Path(self.sb.stubs) / "herdr-app"),
+                               CK_HERDR_LAUNCH_GAP_S="0")
         self.patch = mock.patch.dict(os.environ, self.env, clear=True)
         self.patch.start()
         self.rd = Path(self.sb.runs) / "fixture-run"
@@ -76,6 +77,18 @@ class HerdrTests(unittest.TestCase):
             self.assertIn(label, a)
         self.assertEqual(herdr.saved(self.rd)["terminal"], out["herdr_terminal"])
         self.assertNotEqual(herdr.safe_name("x" * 100 + "a"), herdr.safe_name("x" * 100 + "b"))
+
+    def test_launches_are_spaced_so_panes_can_start(self):
+        runs = Path(self.sb.runs)
+        (runs / herdr.LAST_LAUNCH).unlink(missing_ok=True)
+        self.assertEqual(herdr.settle(runs, gap_s=5), 0.0)  # no earlier launch: no wait
+        herdr.mark_launch(runs)
+        with mock.patch.object(herdr.time, "sleep") as sleep:
+            waited = herdr.settle(runs, gap_s=5)
+        self.assertGreater(waited, 4.0)
+        sleep.assert_called_once()
+        (runs / herdr.LAST_LAUNCH).write_text(f"{time.time() - 60:.3f}\n")
+        self.assertEqual(herdr.settle(runs, gap_s=5), 0.0)  # long ago: no wait
 
     def test_job_title_label(self):
         argv = herdr.run_argv("r", "/tmp", "/x/live.sh", "t-main", [], agent="codex", title="  FND-SiN MW stack  -> wiki ")
