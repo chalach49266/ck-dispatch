@@ -372,6 +372,9 @@ def close_later(terminal, delay_s, run_dir=None):
         return None
 
 
+BASELINE_S = 60.0
+
+
 def _busy(info):
     st = info.get("status")
     raw = st if isinstance(st, str) else (st or {}).get("state")
@@ -388,15 +391,26 @@ def _get(terminal, log=None):
 
 def _closer_main(args):
     terminal, delay_s, run_dir = args[0], float(args[1]), (args[2] or None)
+    start = time.monotonic()
+
+    def wait_until(t):
+        while time.monotonic() < t:
+            time.sleep(max(0.01, min(2.0, t - time.monotonic())))
+            if run_dir and not os.path.isdir(run_dir):
+                return False  # the run folder was removed (test sandbox)
+        return True
+
+    # The turn count to compare with is read a while after the finish: the agent writes summary.md
+    # (ck-run's "done") a few seconds before it ends its turn, so a count read at once looks like a
+    # follow-up later (A-1115-50: Codex 0 -> 1 kept the pane).
+    if not wait_until(start + min(BASELINE_S, delay_s / 2)):
+        return 0
     first = _get(terminal)
     if first is None:
         return 0
     turn0 = first.get("turn") or 0
-    end = time.monotonic() + delay_s
-    while time.monotonic() < end:
-        time.sleep(max(0.01, min(2.0, end - time.monotonic())))
-        if run_dir and not os.path.isdir(run_dir):
-            return 0  # the run folder was removed (test sandbox)
+    if not wait_until(start + delay_s):
+        return 0
     info = _get(terminal)
     if info is None or info.get("state") == "finished" and not info.get("labels"):
         return 0  # gone already
