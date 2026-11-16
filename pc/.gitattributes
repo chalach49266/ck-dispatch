@@ -1,0 +1,4 @@
+# Shell/Python scripts, including extensionless launchers, require LF.
+* text=auto eol=lf
+# Windows command files require CRLF.
+*.cmd text eol=crlf

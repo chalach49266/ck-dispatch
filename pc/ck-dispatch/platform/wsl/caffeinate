@@ -1,0 +1,35 @@
+#!/bin/bash
+# ck-run's `caffeinate -i -w <pid>` on Windows + WSL (2026-11-15). Point config live.caffeinate here.
+# Keeps Windows from idle sleep (SetThreadExecutionState ES_CONTINUOUS|ES_SYSTEM_REQUIRED) while <pid> lives.
+# The PowerShell helper waits on its stdin: when <pid> ends (or this script is stopped) the pipe closes and the
+# helper exits, which releases the request. Like caffeinate it does not stop lid-close sleep.
+# CK_AWAKE_DEBUG=1 prints the SetThreadExecutionState result (non-zero = accepted) to stderr.
+PS=/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
+WPID=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -w) WPID="$2"; shift 2 ;;
+    *) shift ;;           # -i, -d, -m, -s: one mode on Windows (system required)
+  esac
+done
+if [ -z "${WSL_INTEROP:-}" ]; then
+  WSL_INTEROP="$(ls -t /run/WSL/*_interop 2>/dev/null | head -1)"; export WSL_INTEROP
+fi
+read -r -d '' CODE <<'PSEOF'
+$ProgressPreference = 'SilentlyContinue'
+$k = Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint f);' -Name P -Namespace CkAwake -PassThru
+$r = $k::SetThreadExecutionState([uint32]2147483649)
+if ($env:CK_AWAKE_DEBUG) { [Console]::Error.WriteLine("SetThreadExecutionState -> $r") }
+while ($null -ne [Console]::In.ReadLine()) { }
+PSEOF
+ENC="$(printf '%s' "$CODE" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)"
+[ -n "${CK_AWAKE_DEBUG:-}" ] && export WSLENV="${WSLENV:+$WSLENV:}CK_AWAKE_DEBUG"
+trap 'trap - TERM INT; pkill -TERM -P $$ 2>/dev/null; exit 0' TERM INT
+(
+  if [ -n "$WPID" ]; then
+    while kill -0 "$WPID" 2>/dev/null; do sleep 10; done
+  else
+    while :; do sleep 3600; done
+  fi
+) | "$PS" -NoProfile -NonInteractive -EncodedCommand "$ENC" &
+wait

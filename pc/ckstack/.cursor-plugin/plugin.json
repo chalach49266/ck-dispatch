@@ -1,0 +1,15 @@
+{
+  "name": "ckstack",
+  "displayName": "ckstack",
+  "version": "0.1.0",
+  "description": "chalach's own pstack for Grok Bot: the ck-mode router, 12 principles, 12 lab playbooks, 13 skills and the ck-worker brief, run on the real model fleet through ck-run",
+  "author": {
+    "name": "chalach"
+  },
+  "license": "UNLICENSED",
+  "keywords": ["ckstack", "ck-run", "grok-bot", "lab", "workflow"],
+  "category": "developer-tools",
+  "tags": ["workflow", "principles", "orchestration", "lab"],
+  "skills": ["./ck-mode/", "./skills/"],
+  "agents": "./agents/"
+}

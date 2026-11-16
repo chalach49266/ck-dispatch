@@ -1,0 +1,25 @@
+# plugin scope workspace (relative to PHD_ROOT; dash means user scope)
+grokbot@ck-grokbot user -
+ckstack@ckstack user -
+skins@hellosverre-mods user -
+mission-control@claude-code-mods user -
+agent-radar@claude-code-mods user -
+blast-radius@claude-code-mods user -
+browser-lanes@claude-code-mods user -
+cache-clock@claude-code-mods user -
+context-bar@claude-code-mods user -
+heatmap@claude-code-mods user -
+md-preview@claude-code-mods user -
+merge-gate@claude-code-mods user -
+next-steps@claude-code-mods user -
+now-playing@claude-code-mods user -
+reels@claude-code-mods user -
+replay-theater@claude-code-mods user -
+review-watch@claude-code-mods user -
+snake@claude-code-mods user -
+switchboard@claude-code-mods user -
+token-weather@claude-code-mods user -
+usage-meter@claude-code-mods user -
+where-am-i@claude-code-mods user -
+codex@openai-codex user -
+superpowers@claude-plugins-official local Device Fabrication

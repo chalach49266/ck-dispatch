@@ -1,0 +1,11 @@
+{
+  "name": "ck-grokbot",
+  "owner": { "name": "chalach" },
+  "plugins": [
+    {
+      "name": "grokbot",
+      "source": "./grokbot",
+      "description": "/grokbot: Claude Code stands in for Grok Bot (ck-run delegation, logged in ~/PhD_local)"
+    }
+  ]
+}

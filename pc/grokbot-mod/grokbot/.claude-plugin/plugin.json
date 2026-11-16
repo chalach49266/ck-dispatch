@@ -1,0 +1,10 @@
+{
+  "name": "grokbot",
+  "version": "0.2.2",
+  "description": "/grokbot: Claude Code stands in for Grok Bot and routes work to claude/codex/cursor/agy through ck-run (v4: trigger words, a status line per live run, wake on finish), logging everything in ~/PhD_local",
+  "author": {
+    "name": "chalach"
+  },
+  "license": "UNLICENSED",
+  "types": "./types/index.d.ts"
+}

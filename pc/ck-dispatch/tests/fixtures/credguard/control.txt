@@ -1,0 +1,1 @@
+ck-run step-3 control file. Not a secret. Reading this one should succeed.

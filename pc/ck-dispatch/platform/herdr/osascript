@@ -1,0 +1,591 @@
+#!/usr/bin/python3 -I
+"""ck-run's `osascript` for the Herdr app on Windows + WSL (2026-11-16, chalach: "make the whole ckrun ... and
+grokbot mode work in herdr"). Same calls and answers as platform/wsl/osascript (tmux), served by herdr-core (`hc`):
+
+  ck-run "window" (one per ask)  = a Herdr SPACE id ck<wid> with ONE TAB id ck<wid> (named after the first run)
+  ck-run "tab"    (one per run)  = a PANE in that tab: runs of one ask sit side by side (split panes)
+                                   (chalach 2026-11-16: "q1 sure split")
+  session id                     = the hc terminal address (t12); hc name ck<wid>-<n>
+  With a Grok Bot running in Herdr (an hc terminal named grokbot-*, started by ck-herdr; newest wins;
+  env CK_HERDR_PARENT=<address|name> picks one), every run is instead Grok Bot's sub-agent (hc --parent,
+  --outlive-parent; the Agents list nests it under Grok Bot) with no tab of its own: the layout main-ck gets a
+  column "ck-agents" right of the work area with one equal block per live run, so Grok Bot is the left half and
+  the runs share the right half (chalach 2026-11-16: "grokbot main is on the left split half and then on the
+  right half it would be 3 agents vertically split ... equally split shared between 3 or whatever the number").
+  The column is rebuilt on every start and close (and `osascript --sync`); no runs = no column.
+
+Every run is an hc terminal on the Windows core that runs `wsl.exe -d <distro> --exec /bin/bash <script>`; the
+script (in ~/.local/state/ck-osascript/herdr/) sets PATH and runs ck-run's command. The labels herdr.space /
+herdr.tab put it in the Herdr window (the window is opened if it is closed). Terminals live in herdr-core, so runs
+keep going when the Herdr window closes or updates. tail = `hc read`, write = `hc send` (text + Enter),
+close = `hc kill` + `hc rm`, notify = a Windows toast (from platform/wsl/osascript).
+
+  window  argv: <command> <title> <profile>              -> "<window id>|<how>|<session id>"
+  tab     argv: <command> <title> <profile> <window id>  -> "<window id>|<how>|<session id>"
+  exists  argv: <window id> <prefix>                     -> yes | other | no
+  tail    argv: <session id> <tty>  (v4)                 -> "CKOK\n<text>" | CKNOTFOUND
+          argv: <window id>         (old)                -> <text>
+  write   argv: <session id> <tty> <text>                -> CKOK | CKNOTFOUND
+  close   argv: <session id> <tty>                       -> CKOK | CKNOTFOUND
+  notify  argv: <message> <title>                        -> CKOK
+
+Env: CK_HC (hc.exe path), CK_HERDR_APP (herdr-app.exe path), CK_WIN_USER, CK_WSL_DISTRO,
+CK_NO_HERDR_APP=1 = never open or drive the Herdr window (terminals still start in herdr-core).
+"""
+import fcntl
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+_loader = importlib.machinery.SourceFileLoader("ck_wsl_osascript", os.path.join(HERE, "..", "wsl", "osascript"))
+_spec = importlib.util.spec_from_loader(_loader.name, _loader)
+wsl = importlib.util.module_from_spec(_spec)
+_loader.exec_module(wsl)  # its main() only runs as a script
+
+ENV = wsl.ENV
+STATE_DIR = os.path.join(os.path.expanduser("~"), ".local", "state", "ck-osascript", "herdr")
+RUNS_DIR = os.path.join(STATE_DIR, "runs")
+SELF = os.path.realpath(__file__)
+LAYOUT_NAME = "main-ck"  # our clone of Herdr's main layout (A-1116-8); Herdr's own files stay as shipped
+CK_RUN_NAME = re.compile(r"ck\d+-\d+(-[a-z0-9-]+)?")
+LINUX_PATH = ":".join([os.path.expanduser("~/.local/bin"), "/usr/local/sbin", "/usr/local/bin", "/usr/sbin",
+                       "/usr/bin", "/sbin", "/bin"])
+
+
+def win_user() -> str:
+    return os.environ.get("CK_WIN_USER") or "{{WIN_USER}}"
+
+
+def win_home_linux() -> str:
+    return f"/mnt/c/Users/{win_user()}"
+
+
+def hc_path() -> str:
+    return os.environ.get("CK_HC") or f"{win_home_linux()}/AppData/Local/Programs/herdr-core/hc.exe"
+
+
+def app_path() -> str:
+    return os.environ.get("CK_HERDR_APP") or f"{win_home_linux()}/AppData/Local/Programs/herdr-app/herdr-app.exe"
+
+
+def _exe(path, *args, timeout=30):
+    # run Windows programs from a Windows folder (a Linux cwd becomes a \\wsl.localhost path for them)
+    cwd = win_home_linux() if os.path.isdir(win_home_linux()) else None
+    return subprocess.run([path, *args], env=ENV, cwd=cwd, stdin=subprocess.DEVNULL, capture_output=True,
+                          text=True, encoding="utf-8", errors="replace", timeout=timeout)
+
+
+def hc(*args, timeout=30):
+    return _exe(hc_path(), *args, timeout=timeout)
+
+
+def hc_json(*args, timeout=30):
+    p = hc(*args, "--json", timeout=timeout)
+    try:
+        return p.returncode, json.loads(p.stdout or "null")
+    except ValueError:
+        return p.returncode, None
+
+
+def app(*args, timeout=20):
+    if os.environ.get("CK_NO_HERDR_APP"):
+        return None
+    try:
+        return _exe(app_path(), *args, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+# ---------- state ----------
+
+def _locked(fn):
+    os.makedirs(RUNS_DIR, mode=0o700, exist_ok=True)
+    fd = os.open(os.path.join(STATE_DIR, "state.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return fn()
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def live_terminals() -> list:
+    rc, data = hc_json("ls")
+    if rc != 0 or not isinstance(data, dict):
+        raise RuntimeError("hc ls failed (is herdr-core running? open the Herdr app once)")
+    return [t for t in data.get("terminals", []) if t.get("state") == "live"]
+
+
+def run_files(wid: str) -> list:
+    try:
+        names = os.listdir(RUNS_DIR)
+    except OSError:
+        return []
+    return sorted(n[:-5] for n in names if n.endswith(".json") and n.startswith(f"ck{wid}-"))
+
+
+def read_run(name: str) -> dict:
+    try:
+        with open(os.path.join(RUNS_DIR, name + ".json")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def write_run(name: str, data: dict):
+    tmp = os.path.join(RUNS_DIR, name + ".json.tmp")
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, os.path.join(RUNS_DIR, name + ".json"))
+
+
+def reserve(wid=None):
+    """(wid, n): a new window id (wid None) or the next tab number in window wid. Never reuses a live name."""
+    def pick():
+        live = {t.get("name") or "" for t in live_terminals()}
+        taken = live | set(os.listdir(RUNS_DIR))
+        used = lambda nm: any(x == nm or x.startswith(nm + "-") or x == nm + ".json" for x in taken)
+        if wid is None:
+            p = os.path.join(STATE_DIR, "next")
+            try:
+                with open(p) as f:
+                    w = int(f.read().strip() or 1000)
+            except (OSError, ValueError):
+                w = 1000
+            w = max(w, 5000)  # Herdr window ids start at 5000, tmux ones below: platform/auto routes by the number
+            while any(used(f"ck{w}-{k}") for k in (1, 2, 3)) or run_files(str(w)):
+                w += 1
+            with open(p, "w") as f:
+                f.write(str(w + 1))
+            w, k = str(w), 1
+        else:
+            w, k = wid, 1
+            while used(f"ck{w}-{k}"):
+                k += 1
+        write_run(f"ck{w}-{k}", {"reserved": time.time()})  # placeholder; start() renames it to the full name
+        return w, k
+    return _locked(pick)
+
+
+def grokbot_parent():
+    """(address, space id, tab id) of the Grok Bot terminal in Herdr, or None. Never fails a run."""
+    try:
+        live = live_terminals()
+    except RuntimeError:
+        return None
+    want = os.environ.get("CK_HERDR_PARENT", "")
+    cands = [t for t in live if (want and want in (t.get("address"), t.get("name")))
+             or (not want and (t.get("name") or "").startswith("grokbot"))]
+    best = None
+    for t in cands:
+        rc, d = hc_json("get", t["address"])
+        labels = (d or {}).get("labels", {}) if rc == 0 and isinstance(d, dict) else {}
+        space, tab = labels.get("herdr.space"), labels.get("herdr.tab")
+        if space and tab and (best is None or (d.get("created_ms") or 0) > best[3]):
+            best = (t["address"], space, tab, d.get("created_ms") or 0)
+    return best[:3] if best else None
+
+
+def close_after_s() -> int:
+    """config live.close_tab_after_s (ck-run's own setting; 0 = never), default 600."""
+    try:
+        with open(os.path.join(HERE, "..", "..", "config", "workspaces.json")) as f:
+            return int(float(json.load(f).get("live", {}).get("close_tab_after_s", 600)))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 600
+
+
+def layout_path() -> str:
+    return f"{win_home_linux()}/.config/herdr-app/layouts/{LAYOUT_NAME}.json"
+
+
+def sync_layout(drop: str = "") -> str:
+    """Rebuild the ck-agents column of the main-ck layout: one equal block per live ck-run sub-agent of a Grok
+    Bot (minus `drop`, a terminal about to close). Herdr applies the file at once. Never fails a run."""
+    def work():
+        try:
+            live = live_terminals()
+        except RuntimeError:
+            return "hc ls failed"
+        bots = {t["address"] for t in live if (t.get("name") or "").startswith("grokbot")}
+        runs = [t for t in live if CK_RUN_NAME.fullmatch(t.get("name") or "") and t.get("parent") in bots
+                and drop not in (t.get("address"), t.get("name"))]
+        runs.sort(key=lambda t: t.get("name"))
+        runs = []  # A-1116-30: sub-agents are panes in Grok Bot's tab now; this only removes an old ck-agents column
+        path = layout_path()
+        try:
+            with open(path, encoding="utf-8") as f:
+                doc = json.load(f)
+        except (OSError, ValueError):
+            return f"no layout {LAYOUT_NAME}"
+        body = None
+        stack = [doc]
+        while stack:
+            n = stack.pop()
+            if isinstance(n, dict):
+                if n.get("id") == "work-body":
+                    body = n
+                    break
+                stack.extend(n.get("children", []))
+        if body is None:
+            return "no work-body node"
+        kids = [c for c in body.get("children", []) if c.get("id") != "ck-agents"]
+        if runs:
+            col = {"id": "ck-agents", "type": "column", "size": {"weight": 1}, "min": 320, "gap": 6,
+                   "children": [{"id": f"ck-agent-{t['address']}", "type": "block", "size": {"weight": 1},
+                                 "min": 60, "radius": 8, "border": {"width": 1, "color": "border"},
+                                 "content": {"terminal": t["address"]}} for t in runs]}
+            at = next((i + 1 for i, c in enumerate(kids) if c.get("id") == "main"), 1)
+            kids.insert(at, col)
+        if kids == body.get("children"):
+            return "unchanged"
+        body["children"] = kids
+        tmp = path + ".ck-tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, path)
+        return f"{len(runs)} run(s) in the agents column"
+    try:
+        return _locked(work)
+    except OSError as e:
+        return f"layout write failed: {e}"
+
+
+# ---------- Herdr window ----------
+
+def ensure_app() -> str:
+    """Open the Herdr window when it is closed. Never blocks long, never fails the run."""
+    if os.environ.get("CK_NO_HERDR_APP"):
+        return "no Herdr window (CK_NO_HERDR_APP)"
+    p = app("status")
+    if p is not None and p.returncode == 0:
+        return "Herdr"
+    if not os.path.exists(app_path()):
+        return "herdr-app.exe not found (runs still in herdr-core: hc ls)"
+    try:
+        subprocess.Popen([app_path()], env=ENV, cwd=win_home_linux(), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    except OSError as e:
+        return f"herdr-app failed: {e}"
+    for _ in range(20):
+        time.sleep(0.5)
+        p = app("status")
+        if p is not None and p.returncode == 0:
+            return "Herdr (opened)"
+    return "Herdr (starting)"
+
+
+def short_title(title: str) -> str:
+    return " ".join(title.split())[:60]
+
+
+def name_in_app(space: str, tab: str, title: str, new_space: bool, under_grokbot: bool = False):
+    """Name a new space and its tab, show it. Best effort: the app learns of the terminal within a moment.
+    A later run of the same ask only adds a pane, so nothing to name."""
+    if not new_space:
+        return
+    for _ in range(10):
+        p = app("do", "tab.rename", "--id", tab, "--name", short_title(title))
+        if p is None:
+            return
+        if p.returncode == 0:
+            break
+        time.sleep(0.3)
+    if under_grokbot:
+        return  # Grok Bot's space keeps its name and focus (chalach may be typing there)
+    app("do", "space.rename", "--id", space, "--name", "ck · " + short_title(re.sub(r"^CK\s*·\s*", "", title)))
+    app("do", "space.select", "--id", space)
+
+
+# ---------- the calls ----------
+
+def agent_word(title: str) -> str:
+    """'CK · cursor · x (race: grok) · 1a2b' -> 'grok'; 'CK · codex · x · 1a2b' -> 'codex' (for the terminal name)."""
+    m = re.search(r"\(race: ([A-Za-z0-9-]+)\)", title)
+    parts = [p.strip() for p in title.split("·")]
+    word = m.group(1) if m else (parts[1] if len(parts) > 1 else "")
+    return re.sub(r"[^a-z0-9-]", "", word.lower())[:14]
+
+
+STOP_WORDS = {"a", "an", "the", "of", "in", "on", "to", "for", "and", "or", "with", "from", "by", "at", "into", "is"}
+
+
+def desc_word(title: str, limit: int = 24) -> str:
+    """A very short description for the terminal name, from the run title (A-1116-29, chalach 2026-11-16: "it would
+    also be nice to just glimpse and see already what the bot is for"). 'CK · codex · PC setup kit in pc/ · 7816'
+    -> 'pc-setup-kit'; 'CK · claude · Review of <run id>: PC s… · x' -> 'review-pc'; race and run ids dropped."""
+    parts = [p.strip() for p in title.split("·")]
+    text = parts[2] if len(parts) > 2 else (parts[0] if parts else "")
+    text = re.sub(r"\(race: [^)]*\)", " ", text)
+    text = re.sub(r"\S*\u2026\s*$", " ", text)  # a word ck-run cut short with "…" says nothing
+    review = re.match(r"\s*review of\s+\S+?:\s*(.*)$", text, re.I)
+    if review:
+        text = "review " + review.group(1)
+    text = re.sub(r"\b\d{4}-\d{2}-\d{2}t?[\w-]*", " ", text, flags=re.I)  # run ids and dates
+    words, out = [], ""
+    for w in re.findall(r"[a-z0-9]+", text.lower()):
+        if w in STOP_WORDS or w in words:
+            continue
+        nxt = (out + "-" + w) if out else w
+        if len(nxt) > limit:
+            break
+        words.append(w)
+        out = nxt
+    return out
+
+
+# Herdr's program keys (its programs table) for the agent CLIs ck-run starts
+HERDR_APP = {"claude": "claude-code", "codex": "codex", "cursor": "cursor", "agy": "antigravity"}
+SILENT_CLIS = {"cursor", "agy"}  # CLIs that send Herdr no status of their own
+
+
+def status_watcher(command: str, title: str, name: str) -> str:
+    """Shell lines for the run's script: a small background job that tells Herdr (OSC 7501 on this terminal) the
+    run is `done` (or `error`) as soon as ck-run has written the run's result.json, so Herdr's Agents list shows it
+    at once (chalach 2026-11-16: "it should display done right in herdr agents"). CLIs that report nothing
+    themselves also get `working` at the start. Then, for close_tab_after_s (ck-run's 5 min since A-1116-21): an agent that
+    reports `idle` over the done (Codex does) gets `done` again ("the codex subagent ... is still grey circle"),
+    unless somebody used it (it went working or blocked). A clean run (status ok) nobody used closes itself at the
+    end of that time ("those agents that is finished it should also disappear itself after 10 minutes").
+    The job ends with the run's program."""
+    m = re.search(r"(/[^'\"\s]*/agent_runs/[^/'\"\s]+)/live\.sh", command)
+    if not m:
+        return ""
+    parts = [p.strip().lower() for p in title.split("·")]
+    cli = parts[1] if len(parts) > 1 else ""
+    appword = HERDR_APP.get(cli, re.sub(r"[^a-z0-9-]", "", cli))
+    rec = (f"app={appword}:" if appword else "") + "state="
+    return (
+        f"CKRUN={shlex.quote(m.group(1))}\n"
+        f"ck_status() {{ printf '\\033]7501;{rec}%s\\007' \"$1\" >/dev/tty 2>/dev/null; }}\n"
+        + ("ck_status working\n" if cli in SILENT_CLIS else "")
+        + "(\n"
+        "  until [ -s \"$CKRUN/result.json\" ]; do sleep 2; [ -d \"$CKRUN\" ] || exit 0; done\n"
+        "  st=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get(\"status\", \"\"))' "
+        "\"$CKRUN/result.json\" 2>/dev/null)\n"
+        "  case \"$st\" in ok|partial|done) ck_status done ;; *) ck_status error; exit 0 ;; esac\n"
+        f"  used=0; t=0; lim={close_after_s()}; [ \"$lim\" -gt 0 ] || lim=600\n"
+        "  while [ $t -lt $lim ]; do sleep 5; t=$((t+5))\n"
+        f"    cur=$({shlex.quote(hc_path())} get {name} --json 2>/dev/null | python3 -I -c "
+        "'import json,sys; print(((json.load(sys.stdin) or {}).get(\"status\") or {}).get(\"state\", \"\"))' 2>/dev/null)\n"
+        "    case \"$cur\" in working|blocked) used=1 ;; done) ;; *) [ $used = 0 ] && ck_status done ;; esac\n"
+        "  done\n"
+        f"  if [ \"$st\" = ok ] && [ $used = 0 ] && [ {close_after_s()} -gt 0 ]; then\n"
+        f"    python3 -I {shlex.quote(SELF)} --sync --drop {name} >/dev/null 2>&1\n"
+        f"    {shlex.quote(hc_path())} kill {name} >/dev/null 2>&1\n"
+        "  fi\n"
+        ") &\nCKW=$!\n"
+    )
+
+
+def start(command: str, title: str, wid: str, n: int, new_space: bool) -> int:
+    base = f"ck{wid}-{n}"
+    # Herdr's agents list shows this name: ck<wid>-<n>-<agent>-<short description> (A-1116-29)
+    # hc names: 1-32 of a-z 0-9 - _ . (measured 2026-11-16), so the description gets the room that is left
+    head = "-".join(x for x in (base, agent_word(title)) if x)
+    desc = desc_word(title, limit=31 - len(head))
+    name = head + ("-" + desc if desc else "")
+    _locked(lambda: os.replace(os.path.join(RUNS_DIR, base + ".json"), os.path.join(RUNS_DIR, name + ".json"))
+            if base != name and os.path.exists(os.path.join(RUNS_DIR, base + ".json")) else None)
+    space, tab = f"ck{wid}", f"ck{wid}"  # no Grok Bot in Herdr: one space and tab per ask, each run a pane
+    parent = grokbot_parent()
+    if parent:
+        # A-1116-30 (chalach 2026-11-16: "i can't see the status of those subagent in their terminal ... a big chunk
+        # of terminal that i can't even remove" and "it should only live in that space for the subagent frm that
+        # space"): Grok Bot's sub-agent is a PANE in Grok Bot's own tab (Herdr's header with status, menu and
+        # close; only in that space), no longer a block in the layout-wide ck-agents column (A-1116-9).
+        space, tab = parent[1], parent[2]
+    family = ["--parent", parent[0], "--outlive-parent"] if parent else ["--no-parent"]
+    where = [] if parent else ["--label", f"herdr.space={space}", "--label", f"herdr.tab={tab}"]
+    script = os.path.join(STATE_DIR, name + ".sh")
+    with open(script, "w") as f:
+        f.write("#!/bin/bash\n# ck-run live window in Herdr: " + title.replace("\n", " ") + "\n"
+                f"export PATH={shlex.quote(LINUX_PATH)}:\"$PATH\"\nexport LANG=${{LANG:-C.UTF-8}}\n"
+                "cd \"$HOME\"\n" + status_watcher(command, title, name) +
+                f"/bin/bash -c {shlex.quote(command)}\nrc=$?\n"
+                "[ -n \"${CKW:-}\" ] && kill \"$CKW\" 2>/dev/null\nexit $rc\n")
+    os.chmod(script, 0o700)
+    how = ensure_app()
+    # --outlive-parent / --no-notify: a run must not die with, or type notes into, the Grok Bot terminal
+    rc, data = hc_json("run", "--bg", *family, "--no-notify", "--name", name,
+                       "--cwd", f"C:\\Users\\{win_user()}",
+                       *where, "--label", f"ck.window={wid}", "--label", f"ck.title={short_title(title)}",
+                       "--", "wsl.exe", "-d", wsl.distro(), "--exec", "/bin/bash", script)
+    if rc != 0 or not isinstance(data, dict) or not data.get("address"):
+        _locked(lambda: os.path.exists(os.path.join(RUNS_DIR, name + ".json"))
+                and os.remove(os.path.join(RUNS_DIR, name + ".json")))
+        sys.stderr.write(f"hc run failed (rc {rc}): {json.dumps(data)[:300]}\n")
+        return 1
+    addr = data["address"]
+    _locked(lambda: write_run(name, {"address": addr, "title": title, "space": space, "tab": tab,
+                                     "script": script, "parent": parent and parent[0], "started": time.time()}))
+    if parent:
+        how += "; " + place_pane(name, addr, parent[0])
+    elif not how.startswith("no Herdr") and "not found" not in how:
+        name_in_app(space, tab, title, new_space)
+    sys.stdout.write(f"{wid}|herdr ({how})|{addr}\n")
+    return 0
+
+
+def place_pane(name: str, addr: str, bot: str) -> str:
+    """Give Grok Bot's new sub-agent a pane in Grok Bot's tab (A-1116-32, chalach 2026-11-16: "teh agents deployed
+    is splitted wrong, it should split vertically"): the first live sub-agent goes RIGHT of Grok Bot (half the
+    width), each later one DOWN from the sibling pane with the largest share, so the agents stack top to bottom on
+    the right half (4 agents = 4 equal rows; Herdr has no resize command). Herdr's terminal.keep splits the focused
+    pane, so the target is focused first and Grok Bot gets the focus back. Never fails a run: without a pane the
+    run is still Grok Bot's sub-agent in the Agents list."""
+    if os.environ.get("CK_NO_HERDR_APP"):
+        return "no pane (CK_NO_HERDR_APP)"
+    try:
+        live = {t.get("address") for t in live_terminals()}
+    except RuntimeError:
+        live = set()
+
+    def pick():
+        sibs = []
+        for n in run_files_all():
+            if n == name:
+                continue
+            r = read_run(n)
+            if r.get("parent") == bot and r.get("share") and r.get("address") in live:
+                sibs.append((n, r))
+        if not sibs:
+            return bot, "right", 1.0
+        n, r = max(sibs, key=lambda x: (x[1]["share"], -x[1].get("started", 0)))
+        half = r["share"] / 2
+        write_run(n, {**r, "share": half})
+        return r["address"], "down", half
+
+    target, place, share = _locked(pick)
+    ok = False
+    for _ in range(12):  # the app learns of a new terminal within a moment
+        app("do", "pane.focus", "--terminal", target)
+        p = app("do", "terminal.keep", "--terminal", addr, "--place", place)
+        if p is None:
+            break
+        if p.returncode == 0 and '"pane"' in (p.stdout or ""):
+            ok = True
+            break
+        time.sleep(0.5)
+    app("do", "pane.focus", "--terminal", bot)
+    if ok:
+        _locked(lambda: write_run(name, {**read_run(name), "share": share}))
+        return f"pane {place} of {target}"
+    return "no pane (terminal.keep failed); shown under Grok Bot in Agents"
+
+
+def run_files_all() -> list:
+    try:
+        return sorted(n[:-5] for n in os.listdir(RUNS_DIR) if n.endswith(".json"))
+    except OSError:
+        return []
+
+
+def new_window(command: str, title: str, profile: str) -> int:
+    wid, n = reserve()
+    return start(command, title, wid, n, True)
+
+
+def new_tab(command: str, title: str, profile: str, wid: str) -> int:
+    if not wid.isdigit():
+        return new_window(command, title, profile)
+    wid, n = reserve(wid)
+    return start(command, title, wid, n, n == 1)
+
+
+def exists(wid: str, prefix: str) -> str:
+    if not wid.isdigit():
+        return "no"
+    mine = [t for t in live_terminals() if re.fullmatch(rf"ck{wid}-\d+(-[a-z0-9-]+)?", t.get("name") or "")]
+    if not mine:
+        return "no"
+    return "yes" if any(read_run(t["name"]).get("title", "").startswith(prefix) for t in mine) else "other"
+
+
+def find(sid: str, tty: str):
+    """The terminal (hc get) for a session id (address) or, as a fallback, the newest live run of ours. None."""
+    if sid and re.fullmatch(r"[A-Za-z0-9_/-]{1,64}", sid):
+        rc, data = hc_json("get", sid)
+        if rc == 0 and isinstance(data, dict) and data.get("address"):
+            return data
+        return None
+    return None  # a tty alone cannot name a Herdr terminal (every wsl.exe session has its own /dev/pts)
+
+
+def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--sync":  # rebuild the agents column (the run scripts call it)
+        drop = sys.argv[3] if len(sys.argv) > 3 and sys.argv[2] == "--drop" else ""
+        print(sync_layout(drop))
+        return 0
+    lines, args = wsl.split_argv(sys.argv)
+    kind = wsl.kind_of(lines)
+    a = lambda i: args[i] if len(args) > i else ""
+    v4 = any(ln.startswith("-- ck-run:") for ln in lines)
+    try:
+        if kind == "notify":
+            wsl.toast(" ".join(a(0).split())[:240], " ".join(a(1).split())[:80] or "ck-run")
+            print("CKOK")
+            return 0
+        if kind == "exists":
+            print(exists(a(0), a(1)))
+            return 0
+        if kind == "tail":
+            if v4:
+                t = find(a(0), a(1))
+                if not t:
+                    print("CKNOTFOUND")
+                    return 0
+                p = hc("read", t["address"], "--lines", "300")
+                sys.stdout.write("CKOK\n" + (p.stdout if p.returncode == 0 else ""))
+                return 0
+            if a(0).isdigit():
+                mine = [t for t in live_terminals() if re.fullmatch(rf"ck{a(0)}-\d+(-[a-z0-9-]+)?", t.get("name") or "")]
+                if mine:
+                    sys.stdout.write(hc("read", mine[-1]["address"], "--lines", "300").stdout)
+            return 0
+        if kind == "write":
+            t = find(a(0), a(1))
+            if not t or t.get("state") != "live":
+                print("CKNOTFOUND")
+                return 0
+            p = hc("send", t["address"], a(2))
+            if p.returncode != 0:
+                raise RuntimeError(f"hc send: {(p.stderr or p.stdout).strip()[:300]}")
+            print("CKOK")
+            return 0
+        if kind == "close":
+            t = find(a(0), a(1))
+            if not t:
+                print("CKNOTFOUND")
+                return 0
+            if t.get("state") == "live":
+                hc("kill", t["address"])
+                for _ in range(20):
+                    rc, d = hc_json("get", t["address"])
+                    if rc != 0 or not isinstance(d, dict) or d.get("state") != "live":
+                        break
+                    time.sleep(0.25)
+            hc("rm", t["address"])
+            sync_layout(drop=t["address"])
+            print("CKOK")
+            return 0
+        if kind == "tab":
+            return new_tab(a(0), a(1), a(2), a(3))
+        if kind == "window":
+            return new_window(a(0), a(1), a(2) if len(args) >= 3 else "")
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as e:
+        sys.stderr.write(f"ck-osascript-herdr ({kind}): {e}\n")
+        return 1
+    sys.stderr.write(f"ck-osascript-herdr: unknown script kind ({kind})\n")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

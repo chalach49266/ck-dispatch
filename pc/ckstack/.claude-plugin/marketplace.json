@@ -1,0 +1,16 @@
+{
+  "name": "ckstack",
+  "owner": {
+    "name": "chalach"
+  },
+  "metadata": {
+    "description": "Local marketplace for ckstack, chalach's own pstack for ck-run v4"
+  },
+  "plugins": [
+    {
+      "name": "ckstack",
+      "source": "./",
+      "description": "chalach's own pstack for ck-run v4: router, principles, lab playbooks, skills, worker brief"
+    }
+  ]
+}

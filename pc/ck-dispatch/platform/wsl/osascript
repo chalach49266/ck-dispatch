@@ -1,0 +1,299 @@
+#!/usr/bin/python3 -I
+"""ck-run's `osascript` on Windows + WSL (2026-11-15). ck-run speaks AppleScript to iTerm2 on the Mac; here the same
+calls are served by tmux (one tmux session per ask = "window", one tmux window per run = "tab") and every new
+session is shown in a Windows Terminal tab (window "ck-run") attached to it. Point config live.osascript here.
+
+It reads the script ck-run passes with -e (the same way tests/fake_osascript.py does) and answers in the same
+format iTerm2 would:
+  window  argv: <command> <title> <profile>              -> "<window id>|<how>|<session id>"
+  tab     argv: <command> <title> <profile> <window id>  -> "<window id>|<how>|<session id>"
+  exists  argv: <window id> <prefix>                     -> yes | other | no
+  tail    argv: <session id> <tty>  (v4)                 -> "CKOK\n<text>" | CKNOTFOUND
+          argv: <window id>         (old)                -> <text>
+  write   argv: <session id> <tty> <text>                -> CKOK | CKNOTFOUND   (text, then Enter)
+  close   argv: <session id> <tty>                       -> CKOK | CKNOTFOUND
+  notify  argv: <message> <title>                        -> CKOK   (a Windows toast)
+Window id = digits (ck-run requires it); tmux session "ck<id>". Session id = the tmux pane id ("%7").
+tmux server: `tmux -L ckrun` (own socket). Watch everything: `tmux -L ckrun ls`, attach: `tmux -L ckrun attach -t ck<id>`.
+Env: CK_WSL_DISTRO (default: $WSL_DISTRO_NAME, else Ubuntu); CK_NO_WT=1 = never open Windows Terminal (headless).
+"""
+import base64
+import fcntl
+import glob
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+SOCKET = "ckrun"
+STATE_DIR = os.path.join(os.path.expanduser("~"), ".local", "state", "ck-osascript")
+STATE = os.path.join(STATE_DIR, "state.json")
+MARKERS = ("exists", "tab", "tail", "write", "notify", "close")
+POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+WT_CANDIDATES = ["/mnt/c/Users/{u}/AppData/Local/Microsoft/WindowsApps/wt.exe"]
+
+
+# ---------- plumbing ----------
+
+def base_env() -> dict:
+    """ck-run passes a clean env (no WSL_INTEROP, small PATH): rebuild what tmux and Windows interop need."""
+    env = dict(os.environ)
+    env["PATH"] = ":".join([os.path.expanduser("~/.local/bin"), "/usr/local/bin", "/usr/bin", "/bin",
+                            "/mnt/c/Windows/System32", "/mnt/c/Windows", os.path.dirname(POWERSHELL)])
+    env.setdefault("LANG", "C.UTF-8")
+    if not env.get("WSL_INTEROP"):
+        socks = sorted(glob.glob("/run/WSL/*_interop"), key=lambda p: os.stat(p).st_mtime, reverse=True)
+        if socks:
+            env["WSL_INTEROP"] = socks[0]
+    return env
+
+
+ENV = base_env()
+
+
+def tmux(*args, check=False, timeout=20):
+    p = subprocess.run(["tmux", "-u", "-L", SOCKET, *args], env=ENV, stdin=subprocess.DEVNULL,
+                       capture_output=True, text=True, timeout=timeout)
+    if check and p.returncode != 0:
+        raise RuntimeError(f"tmux {args[0]}: {(p.stderr or p.stdout).strip()[:300]}")
+    return p
+
+
+def split_argv(argv):
+    lines, i = [], 1
+    while i + 1 < len(argv) and argv[i] == "-e":
+        lines.append(argv[i + 1])
+        i += 2
+    return lines, argv[i:]
+
+
+def kind_of(lines):
+    for ln in lines:
+        if ln.startswith("-- ck-run:"):
+            k = ln[len("-- ck-run:"):].strip()
+            return k if k in MARKERS else "unknown"
+    text = "\n".join(lines)
+    if "contents of" in text:
+        return "tail"
+    if "create window" in text or "do script" in text:
+        return "window"
+    if "display notification" in text:
+        return "notify"
+    if "write text" in text:
+        return "write"
+    return "unknown"
+
+
+def next_window_id() -> str:
+    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    fd = os.open(STATE + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            with open(STATE) as f:
+                st = json.load(f)
+        except (OSError, ValueError):
+            st = {}
+        n = int(st.get("next", 1000))
+        while tmux("has-session", "-t", f"=ck{n}").returncode == 0:  # never reuse a live session's id
+            n += 1
+        st["next"] = n + 1
+        tmp = STATE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(st, f)
+        os.replace(tmp, STATE)
+        return str(n)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def server_options():
+    """Run titles stay as ck-run set them (the agent's TUI may not rename a tab), long scrollback, mouse on.
+    Needs a running server, so it is called after new-session."""
+    for opt in (("history-limit", "20000"), ("mouse", "on")):
+        tmux("set-option", "-g", *opt)
+    for opt in (("allow-rename", "off"), ("automatic-rename", "off")):
+        tmux("set-window-option", "-g", *opt)
+
+
+def find_pane(sid: str, tty: str):
+    """The pane id for a session id ("%7") or a tty ("/dev/pts/3"), or None."""
+    p = tmux("list-panes", "-a", "-F", "#{pane_id} #{pane_tty}")
+    if p.returncode != 0:
+        return None
+    for row in p.stdout.splitlines():
+        pid, _, ptty = row.partition(" ")
+        if (sid and pid == sid) or (tty and ptty == tty):
+            return pid
+    return None
+
+
+# ---------- Windows side ----------
+
+def distro() -> str:
+    return os.environ.get("CK_WSL_DISTRO") or os.environ.get("WSL_DISTRO_NAME") or "Ubuntu"
+
+
+def wt_path():
+    user = os.environ.get("CK_WIN_USER") or os.path.basename(os.path.expanduser("~"))
+    for c in [shutil.which("wt.exe", path=ENV["PATH"])] + [p.format(u=u) for p in WT_CANDIDATES
+                                                           for u in (user, "{{WIN_USER}}")]:
+        if c and os.path.exists(c):
+            return c
+    return None
+
+
+def show_in_windows_terminal(session: str, title: str) -> str:
+    """Open a Windows Terminal tab attached to the tmux session. Never blocks, never fails the run."""
+    if os.environ.get("CK_NO_WT"):
+        return "no Windows Terminal (CK_NO_WT)"
+    wt = wt_path()
+    if not wt:
+        return "wt.exe not found (attach by hand: tmux -L ckrun attach -t " + session + ")"
+    safe = title.replace(";", ",")  # wt.exe treats ; as a command separator
+    # chalach 2026-11-15: "open each agent in its own window" -> a new Windows Terminal window per session
+    argv = [wt, "-w", "new", "new-tab", "--title", safe, "--suppressApplicationTitle",
+            "wsl.exe", "-d", distro(), "--", "tmux", "-u", "-L", SOCKET, "attach", "-t", f"={session}"]
+    try:
+        subprocess.Popen(argv, env=ENV, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+        return "Windows Terminal tab"
+    except OSError as e:
+        return f"wt.exe failed: {e}"
+
+
+def toast(message: str, title: str) -> bool:
+    b = lambda s: base64.b64encode(s.encode("utf-8")).decode()  # values never become PowerShell code
+    ps = (
+        "$d={param($s)[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($s))};"
+        f"$t=& $d '{b(title)}';$m=& $d '{b(message)}';"
+        "[void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime];"
+        "$x=[Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent("
+        "[Windows.UI.Notifications.ToastTemplateType]::ToastText02);"
+        "$e=$x.GetElementsByTagName('text');[void]$e.Item(0).AppendChild($x.CreateTextNode($t));"
+        "[void]$e.Item(1).AppendChild($x.CreateTextNode($m));"
+        "$n=[Windows.UI.Notifications.ToastNotification]::new($x);"
+        "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("
+        "'{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show($n)")
+    try:
+        p = subprocess.run([POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", ps], env=ENV,
+                           stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+        return p.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+# ---------- the calls ----------
+
+def new_window(command: str, title: str, profile: str) -> int:
+    wid = next_window_id()
+    session = f"ck{wid}"
+    p = tmux("new-session", "-d", "-s", session, "-n", title, "-x", "200", "-y", "50",
+             "-P", "-F", "#{pane_id}", command)
+    if p.returncode != 0:
+        sys.stderr.write(f"tmux new-session failed: {(p.stderr or p.stdout).strip()[:300]}\n")
+        return 1
+    pane = p.stdout.strip()
+    server_options()
+    how = show_in_windows_terminal(session, title)
+    sys.stdout.write(f"{wid}|{('profile ' + profile) if profile else 'tmux'} ({how})|{pane}\n")
+    return 0
+
+
+def ask_sessions(wid: str) -> list:
+    """The tmux sessions of one ck-run "window": ck<wid> and its per-run sessions ck<wid>-<n>."""
+    names = tmux("list-sessions", "-F", "#{session_name}").stdout.splitlines()
+    return [s for s in names if s == f"ck{wid}" or s.startswith(f"ck{wid}-")]
+
+
+def new_tab(command: str, title: str, profile: str, wid: str) -> int:
+    # chalach 2026-11-15: "open each agent in its own window". A "tab" is its own tmux session ck<wid>-<n>,
+    # shown in its own Windows Terminal window, so every run is visible (a tmux window shows only one tab).
+    if not wid.isdigit():  # no window number (platform/auto: the ask's window is in Herdr) -> a new window
+        return new_window(command, title, profile)
+    n = 1
+    while tmux("has-session", "-t", f"=ck{wid}-{n}").returncode == 0:
+        n += 1
+    session = f"ck{wid}-{n}"
+    p = tmux("new-session", "-d", "-s", session, "-n", title, "-x", "200", "-y", "50",
+             "-P", "-F", "#{pane_id}", command)
+    if p.returncode != 0:
+        sys.stderr.write(f"tmux new-session failed: {(p.stderr or p.stdout).strip()[:300]}\n")
+        return 1
+    pane = p.stdout.strip()
+    server_options()
+    how = show_in_windows_terminal(session, title)
+    sys.stdout.write(f"{wid}|{('profile ' + profile) if profile else 'tmux'} ({how})|{pane}\n")
+    return 0
+
+
+def exists(wid: str, prefix: str) -> str:
+    sessions = ask_sessions(wid) if wid.isdigit() else []
+    if not sessions:
+        return "no"
+    names = []
+    for s in sessions:
+        names += tmux("list-windows", "-t", f"={s}", "-F", "#{window_name}").stdout.splitlines()
+    return "yes" if any(n.startswith(prefix) for n in names) else "other"
+
+
+def capture(target: str) -> str:
+    return tmux("capture-pane", "-p", "-J", "-S", "-300", "-t", target).stdout
+
+
+def main() -> int:
+    lines, args = split_argv(sys.argv)
+    kind = kind_of(lines)
+    a = lambda i: args[i] if len(args) > i else ""
+    try:
+        if kind == "notify":
+            toast(" ".join(a(0).split())[:240], " ".join(a(1).split())[:80] or "ck-run")
+            print("CKOK")
+            return 0
+        if kind == "exists":
+            print(exists(a(0), a(1)))
+            return 0
+        if kind == "tail":
+            if any(ln.startswith("-- ck-run:") for ln in lines):
+                pane = find_pane(a(0), a(1))
+                if not pane:
+                    print("CKNOTFOUND")
+                    return 0
+                sys.stdout.write("CKOK\n" + capture(pane))
+                return 0
+            sys.stdout.write(capture(f"=ck{a(0)}:") if a(0).isdigit() else "")
+            return 0
+        if kind == "write":
+            pane = find_pane(a(0), a(1))
+            if not pane:
+                print("CKNOTFOUND")
+                return 0
+            tmux("send-keys", "-t", pane, "-l", "--", a(2), check=True)
+            time.sleep(0.3)
+            tmux("send-keys", "-t", pane, "Enter", check=True)
+            print("CKOK")
+            return 0
+        if kind == "close":
+            pane = find_pane(a(0), a(1))
+            if not pane:
+                print("CKNOTFOUND")
+                return 0
+            tmux("kill-pane", "-t", pane)
+            print("CKOK")
+            return 0
+        if kind == "tab":
+            return new_tab(a(0), a(1), a(2), a(3))
+        if kind == "window":
+            return new_window(a(0), a(1), a(2) if len(args) >= 3 else "")
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as e:
+        sys.stderr.write(f"ck-osascript ({kind}): {e}\n")
+        return 1
+    sys.stderr.write(f"ck-osascript: unknown script kind ({kind})\n")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

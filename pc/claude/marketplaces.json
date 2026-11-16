@@ -1,0 +1,26 @@
+{
+  "ck-grokbot": {
+    "source": "directory",
+    "path": "{{LOCAL_ROOT}}/grokbot-mod"
+  },
+  "ckstack": {
+    "source": "directory",
+    "path": "{{LOCAL_ROOT}}/ckstack"
+  },
+  "hellosverre-mods": {
+    "source": "github",
+    "repo": "hellosverre/claude-skins"
+  },
+  "claude-code-mods": {
+    "source": "github",
+    "repo": "hamzafer/claude-code-mods"
+  },
+  "openai-codex": {
+    "source": "github",
+    "repo": "openai/codex-plugin-cc"
+  },
+  "claude-plugins-official": {
+    "source": "github",
+    "repo": "anthropics/claude-plugins-official"
+  }
+}

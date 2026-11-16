@@ -1,0 +1,154 @@
+#!/usr/bin/python3 -I
+"""ck-run's `osascript` router (A-1116-13, chalach 2026-11-16): "if I run it from herdr then it only spawn subagent in
+herdr not duplicate in terminal, and vice versa if i run it in wsl terminal then it should not spawn duplicate agent
+in herdr only in terminal".
+
+Every call goes to ONE of the two window scripts (same calls, same answers):
+  herdr = platform/herdr/osascript (Herdr app panes)     wsl = platform/wsl/osascript (tmux + Windows Terminal)
+
+New windows (window, tab, exists) follow WHERE THE CALLER RUNS. ck-run gives this script a clean env, so the
+caller's env is read from the parent processes (/proc/<pid>/environ, nearest first):
+  CK_LIVE_HOST=herdr|wsl   set by hand, or by ck-herdr (gbh/cdevh/cnvh) for Grok Bot in Herdr
+  HC_TERMINAL_ID=t12       set by herdr-core in every Herdr terminal (gb/cdev/cnv .cmd forward it through WSLENV)
+  neither                  -> wsl (a normal WSL / Windows Terminal window)
+The Herdr parent (CK_HERDR_PARENT, or the caller's own HC_TERMINAL_ID) is passed on to the herdr script, so runs
+nest under the Grok Bot that started them.
+
+Follow-up calls go to the side that owns the run, whatever the caller:
+  session id "%7" (tmux pane) -> wsl; any other session id (hc address "t12") -> herdr; tty only -> wsl
+  window id >= 5000 -> herdr (its ids start there); below -> wsl (older Herdr ids: found by their run files)
+An ask window of the other side counts as closed ("exists" says no), so the run gets a new window on this side.
+"""
+import os
+import re
+import sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+SCRIPTS = {"herdr": os.path.join(HERE, "..", "herdr", "osascript"),
+           "wsl": os.path.join(HERE, "..", "wsl", "osascript")}
+HERDR_WID_BASE = 5000  # keep in step with platform/herdr/osascript reserve()
+HERDR_RUNS = os.path.join(os.path.expanduser("~"), ".local", "state", "ck-osascript", "herdr", "runs")
+KEYS = ("CK_LIVE_HOST", "HC_TERMINAL_ID", "CK_HERDR_PARENT")
+
+
+def _environ(pid: int) -> dict:
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as f:
+            raw = f.read()
+    except OSError:
+        return {}
+    out = {}
+    for item in raw.split(b"\0"):
+        k, sep, v = item.partition(b"=")
+        if sep and k.decode("utf-8", "replace") in KEYS:
+            out[k.decode()] = v.decode("utf-8", "replace")
+    return out
+
+
+def _ppid(pid: int) -> int:
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return int(f.read().rsplit(")", 1)[1].split()[1])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def caller() -> dict:
+    """The nearest process (this one, then its parents) that carries any of KEYS: those keys."""
+    env = {k: os.environ[k] for k in KEYS if os.environ.get(k)}
+    pid, seen = os.getppid(), 0
+    while not env and pid > 1 and seen < 64:
+        env = {k: v for k, v in _environ(pid).items() if v}
+        pid, seen = _ppid(pid), seen + 1
+    return env
+
+
+def host_of(env: dict) -> str:
+    h = env.get("CK_LIVE_HOST", "").strip().lower()
+    if h in ("herdr", "wsl"):
+        return h
+    return "herdr" if env.get("HC_TERMINAL_ID") else "wsl"
+
+
+def _tmux_has(wid: str) -> bool:
+    import subprocess
+    try:
+        p = subprocess.run(["tmux", "-L", "ckrun", "list-sessions", "-F", "#{session_name}"], stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return any(n == f"ck{wid}" or n.startswith(f"ck{wid}-") for n in p.stdout.split())
+
+
+def wid_side(wid: str) -> str:
+    if not wid.isdigit():
+        return ""
+    if int(wid) >= HERDR_WID_BASE:
+        return "herdr"
+    if _tmux_has(wid):  # tmux first: old Herdr ids (1000-1010) overlap tmux ones
+        return "wsl"
+    try:
+        if any(n.startswith(f"ck{wid}-") for n in os.listdir(HERDR_RUNS)):
+            return "herdr"
+    except OSError:
+        pass
+    return "wsl"
+
+
+def kind_and_args(argv: list):
+    lines, i = [], 1
+    while i + 1 < len(argv) and argv[i] == "-e":
+        lines.append(argv[i + 1])
+        i += 2
+    kind = "unknown"
+    for ln in lines:
+        if ln.startswith("-- ck-run:"):
+            kind = ln[len("-- ck-run:"):].strip()
+            break
+    else:
+        text = "\n".join(lines)
+        kind = ("tail" if "contents of" in text else "window" if ("create window" in text or "do script" in text)
+                else "notify" if "display notification" in text else "write" if "write text" in text else "unknown")
+    return kind, lines, i
+
+
+def route(argv: list, env: dict):
+    """(side, argv for that side's script)."""
+    if len(argv) > 1 and argv[1] == "--sync":
+        return "herdr", argv
+    kind, lines, i = kind_and_args(argv)
+    args = argv[i:]
+    a = lambda n: args[n] if len(args) > n else ""
+    here = host_of(env)
+    if kind in ("tail", "write", "close"):
+        v4 = any(ln.startswith("-- ck-run:") for ln in lines)
+        if kind == "tail" and not v4:  # old form: tail <window id>
+            return wid_side(a(0)) or here, argv
+        sid = a(0)
+        return ("wsl" if sid.startswith("%") or not sid else "herdr"), argv
+    if kind == "exists":
+        if wid_side(a(0)) not in ("", here):
+            return "", ["no"]  # the ask's window is on the other side: open a new one here
+        return here, argv
+    if kind == "tab" and wid_side(a(3)) not in ("", here):
+        argv = list(argv[:i + 3]) + ["new"] + list(argv[i + 4:])  # both scripts: no number = a new window
+    return here, argv
+
+
+def main() -> int:
+    env = caller()
+    side, argv = route(sys.argv, env)
+    if not side:
+        print(argv[0])
+        return 0
+    if side == "herdr" and not os.environ.get("CK_HERDR_PARENT"):
+        parent = env.get("CK_HERDR_PARENT") or env.get("HC_TERMINAL_ID")
+        if parent and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", parent):
+            os.environ["CK_HERDR_PARENT"] = parent
+    script = os.path.realpath(SCRIPTS[side])
+    os.execv(sys.executable, [sys.executable, "-I", script, *argv[1:]])
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

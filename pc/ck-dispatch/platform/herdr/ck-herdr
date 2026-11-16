@@ -1,0 +1,56 @@
+#!/bin/bash
+# ck-herdr (A-1116-3, chalach 2026-11-16: "ckrun grokbot mode all in herdr"): open Claude Code with Grok Bot mode
+# on, inside the Herdr app, in the space "Grok Bot". ck-run's agent runs then open in that space, one tab per ask,
+# as Grok Bot's sub-agents (config live.osascript = platform/herdr/osascript).
+#   ck-herdr [gb|cdev|cnv] [claude args]   gb (default) = ~/PhD_local · cdev = Device Fabrication · cnv = NV Magnetometer
+#                            e.g. ck-herdr gb --continue   (Windows: gbh --continue) = the last conversation, in Herdr
+#   ck-herdr ls              the Herdr spaces, tabs and terminals
+# While a Grok Bot runs in Herdr, ck-run puts every agent run in its space as its sub-agent (platform/herdr/osascript).
+# A Grok Bot already running for that folder is shown, not started twice.
+set -euo pipefail
+U="${CK_WIN_USER:-{{WIN_USER}}}"
+HC="${CK_HC:-/mnt/c/Users/$U/AppData/Local/Programs/herdr-core/hc.exe}"
+APP="${CK_HERDR_APP:-/mnt/c/Users/$U/AppData/Local/Programs/herdr-app/herdr-app.exe}"
+DISTRO="${CK_WSL_DISTRO:-${WSL_DISTRO_NAME:-Ubuntu}}"
+cd "/mnt/c/Users/$U"   # Windows programs want a Windows folder
+
+which="${1:-gb}"
+[ $# -gt 0 ] && shift
+case "$which" in
+  ls) exec "$APP" ls ;;
+  gb|cdev|cnv) ;;
+  -h|--help) sed -n 2,9p "$0"; exit 0 ;;
+  *) echo "ck-herdr: unknown '$which' (gb, cdev, cnv, ls)" >&2; exit 2 ;;
+esac
+name="grokbot-$which"
+tab="grokbot-$which"
+PHD_WIN="{{PHD_ROOT}}"
+declare -A FOLDER=([gb]="$HOME/PhD_local" [cdev]="$PHD_WIN/Device Fabrication" [cnv]="$PHD_WIN/NV Compact Magnetometer")
+declare -A TITLE=([gb]="Grok Bot · PhD_local" [cdev]="Grok Bot · Device Fabrication" [cnv]="Grok Bot · NV Magnetometer")
+
+# the Herdr window
+if ! "$APP" status >/dev/null 2>&1; then
+  setsid "$APP" </dev/null >/dev/null 2>&1 &
+  for _ in $(seq 20); do "$APP" status >/dev/null 2>&1 && break; sleep 0.5; done
+fi
+
+addr=$("$HC" ls --json | python3 -c 'import json,sys; n=sys.argv[1]
+print(next((t["address"] for t in json.load(sys.stdin).get("terminals",[]) if t.get("name")==n and t.get("state")=="live"),""))' "$name")
+if [ -n "$addr" ] && [ $# -gt 0 ]; then echo "ck-herdr: Grok Bot ($which) already runs in Herdr ($addr); showing it, extra args ignored" >&2; fi
+if [ -z "$addr" ]; then
+  # the same start as the shortcut (~/.ck_shortcuts.sh): login shell, the folder, CK_GROKBOT_AUTO=1 (the grokbot mod
+  # turns Grok Bot mode on), then claude with any extra args. --exec: no second shell parsing of the args.
+  # --no-parent: Grok Bot must not end with the terminal that ran ck-herdr.
+  # CK_LIVE_HOST=herdr + CK_HERDR_PARENT=<this terminal's name> (A-1116-13): platform/auto puts this Grok Bot's runs
+  # in Herdr, under it, and never in a Windows Terminal window.
+  addr=$("$HC" run --bg --json --no-parent --no-notify --name "$name" --cwd "C:\\Users\\$U" \
+           --label herdr.space=grokbot --label "herdr.tab=$tab" \
+           -- wsl.exe -d "$DISTRO" --exec /bin/bash -lic 'cd "$1" && shift && CK_GROKBOT_AUTO=1 CK_LIVE_HOST=herdr CK_HERDR_PARENT="$0" exec claude "$@"' \
+              "$name" "${FOLDER[$which]}" "$@" \
+         | python3 -c 'import json,sys; print(json.load(sys.stdin)["address"])')
+  for _ in $(seq 10); do "$APP" do tab.rename --id "$tab" --name "${TITLE[$which]}" >/dev/null 2>&1 && break; sleep 0.3; done
+  "$APP" do space.rename --id grokbot --name "Grok Bot" >/dev/null 2>&1 || true
+fi
+"$APP" do space.select --id grokbot >/dev/null 2>&1 || true
+"$APP" do tab.select --id "$tab" >/dev/null 2>&1 || true
+echo "Grok Bot ($which) in Herdr: terminal $addr, space 'Grok Bot'"

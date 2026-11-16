@@ -1,0 +1,11 @@
+{
+  "name": "ckstack",
+  "version": "0.1.0",
+  "description": "chalach's own pstack: the ck-mode router, 12 principles, 12 lab playbooks, 13 skills and the ck-worker brief, run on the real model fleet through ck-run",
+  "author": {
+    "name": "chalach"
+  },
+  "license": "UNLICENSED",
+  "keywords": ["ckstack", "ck-run", "grok-bot", "lab", "workflow"],
+  "skills": ["./ck-mode", "./skills"]
+}

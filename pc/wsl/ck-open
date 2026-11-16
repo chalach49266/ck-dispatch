@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$HOME/.ck_shortcuts.sh"
+action=${1:-gb}
+[ "$#" -eq 0 ] || shift
+case "$action" in
+  gb|cdev|cnv) "$action" "$@" ;;
+  phd) phd; exec bash -l ;;
+  *) echo "Unknown shortcut: $action" >&2; exit 2 ;;
+esac

@@ -1,0 +1,268 @@
+[
+  {
+    "id": "D1",
+    "date": "2026-11-02",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "Codex may edit inside Device Fabrication / NV Compact Magnetometer after approval; raw folders are blocked.",
+    "enforced_by": "flags.EDIT_AREAS, guards.validate_write_scopes",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "D2",
+    "date": "2026-11-02",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "agy may edit after approval with --mode accept-edits; --mode auto only when ck-run injects it (auto mode); never skip-permissions.",
+    "enforced_by": "flags.build, guards.FORBIDDEN_SUBSTRINGS",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "D3",
+    "date": "2026-11-02",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "Framework v3 goes in the real PhD folder later (not in this step).",
+    "enforced_by": "none (a documents decision)",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "D4",
+    "date": "2026-11-02",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "Cursor always gets --trust; --mode plan unless the edit is approved.",
+    "enforced_by": "flags.build",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "plan-claude-edit",
+    "date": "2026-11-02",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "In edit mode Claude edits only a ~/PhD_local repo (its settings deny Edit on both workspaces).",
+    "enforced_by": "flags.EDIT_AREAS[\"claude\"], runner.write_claude_settings",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "washu-ownership",
+    "date": "2026-11-02",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "WashU HW: the original course files are read-only; agents write only in <course>/solutions/ and <course>/prep/.",
+    "enforced_by": "config/workspaces.json washu writable_only, rulecheck",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "auto-mode",
+    "date": "2026-11-02",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "--mode auto is the default: each agent runs in its own safety-reviewed auto mode; ck-run injects the flags; never a full bypass.",
+    "enforced_by": "cli run --mode (default auto), flags.build, guards.check_child_argv(auto=True)",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "cursor-allow-all",
+    "date": "2026-11-03",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "Cursor auto runs with its allow-all flag --force (only ck-run injects it). The 'claude code check' part (the post-run review) is off since 2026-11-05 (post-review-off).",
+    "enforced_by": "flags.build (cursor auto --force), guards.AUTO_AGENT_FLAGS",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "agy-edit",
+    "date": "2026-11-03",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "agy auto runs do not stop to ask before edits (agy --mode auto); raw folders stay guarded by the rule check.",
+    "enforced_by": "flags.build, flags.build_live (agy auto --mode auto)",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "agy-auto-dirs",
+    "date": "2026-11-03",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "agy auto gets --mode auto plus --add-dir for the workspace root and the run folder (headless and live); never --dangerously-skip-permissions.",
+    "enforced_by": "flags.build, flags.build_live",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "aqs-writable",
+    "date": "2026-11-03",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "nv: AQS/ is writable (writable_only), not a raw folder.",
+    "enforced_by": "config/workspaces.json nv writable_only",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "aqs-review",
+    "date": "2026-11-03",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "The cursor/agy post-run review does not flag nv AQS/ edits inside the task folder.",
+    "enforced_by": "postreview.WRITABLE_SEGMENTS",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "parallel-runs",
+    "date": "2026-11-03",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "No workspace lock: any number of runs, any agents, at the same time; only overlapping --claim paths are refused (busy, exit 6).",
+    "enforced_by": "claims.py (run registry, claims)",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "auto-claims",
+    "date": "2026-11-03",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "Edit runs (and auto runs given --write-scope) claim their --write-scope folders automatically, except shared folders (workspace roots, default write folders, wiki entry folders).",
+    "enforced_by": "claims.from_scopes, claims.shared_area",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "auto-readonly",
+    "date": "2026-11-03",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "An auto run in a writable-only workspace where no writable folder exists runs read-only (auto_readonly) instead of exit 2.",
+    "enforced_by": "runner.auto_readonly_reason, flags.build(readonly=True), rulecheck",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "word-only-notes",
+    "date": "2026-11-04",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "A rule pattern found only in output text (no tool log) is a note, not a flag; credential, cloud_sim and permission_bypass mentions stay flags (safety carve-out).",
+    "enforced_by": "rulecheck.TEXT_NOTE, rulecheck.TEXT_FLAG_CATEGORIES",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "git-push-pip",
+    "date": "2026-11-04",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "git push and pip install (pip, pip3, python -m pip, uv pip) are always allowed: in agent actions they are a note, never a violation or flag.",
+    "enforced_by": "rulecheck.ALLOWED_ACTIONS, postreview (allowed keyword hits)",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "web-search",
+    "date": "2026-11-05",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "Every agent run may use the agent's built-in web search and fetch; shell network tools (curl, wget, scp, rsync, ssh), gh, wrangler and mail stay blocked.",
+    "enforced_by": "config/claude-guard.base.json allow, flags.CODEX_WEB_CONFIG, rulecheck.WEB_TOOLS, prompt.WEB_RULE",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "fleet-lanes",
+    "date": "2026-11-05",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "Fleet lanes: Sol for code, Opus for writing, Grok 4.7 for scouting and third views, Astra for hard steps and races; Composer, Sonnet and Gemini Flash for fast jobs.",
+    "enforced_by": "config/models.json (aliases, tiers, lanes), ck-run route --lane",
+    "source": "Portable policy snapshot; see rule and enforced_by.",
+    "expect": {
+      "lanes": [
+        "quick",
+        "lab-code",
+        "bug-fix",
+        "numbers",
+        "wiki",
+        "writing",
+        "decision",
+        "loop",
+        "repo",
+        "scout",
+        "mechanical"
+      ],
+      "race_default": [
+        "astra",
+        "opus",
+        "grok"
+      ]
+    }
+  },
+  {
+    "id": "triggers",
+    "date": "2026-11-05",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "Trigger words: quick, do, plan, race, check, recall; extra: split, deep, fix, loop, why, number, teach; plus model words and size words S, M, L.",
+    "enforced_by": "grokbot mod trigger line, ckstack ck-mode",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "sizes-budgets",
+    "date": "2026-11-05",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "Every ask has a size S, M or L with a budget that ck-run counts (runs, parallel, reviews, fixes, wall time); over budget = exit 7. A review needs one of 4 reasons: leaves-lab, hardware-or-raw, agent-unsure, you-asked.",
+    "enforced_by": "asks.gate (exit 7), ck-run review --trigger, config/workspaces.json asks",
+    "source": "Portable policy snapshot; see rule and enforced_by.",
+    "expect": {
+      "asks_budgets": {
+        "S": {
+          "runs": 1,
+          "parallel": 1,
+          "reviews": 0,
+          "fixes": 0,
+          "wall_min": 15,
+          "timeout_s": 600,
+          "stall_s": 180
+        },
+        "M": {
+          "runs": 2,
+          "parallel": 1,
+          "reviews": 1,
+          "fixes": 1,
+          "wall_min": 45,
+          "timeout_s": 1800,
+          "stall_s": 300
+        },
+        "L": {
+          "runs": 6,
+          "parallel": 3,
+          "reviews": 2,
+          "fixes": 2,
+          "wall_min": 180,
+          "timeout_s": 7200,
+          "stall_s": 480
+        }
+      },
+      "review_triggers": [
+        "leaves-lab",
+        "hardware-or-raw",
+        "agent-unsure",
+        "you-asked"
+      ],
+      "over_budget_exit": 7
+    }
+  },
+  {
+    "id": "s-asks-self",
+    "date": "2026-11-05",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "Grok Bot answers S asks itself, with no agent, and records it (ck-run ask answered).",
+    "enforced_by": "ckstack ck-mode, ck-run ask answered",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "board-minimal",
+    "date": "2026-11-05",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "Board: a status line plus an on-demand text board, one line per bot; no side pane.",
+    "enforced_by": "ck-run board, grokbot mod status line",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "ckstack",
+    "date": "2026-11-05",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "ckstack is chalach's own skill stack (repo ~/PhD_local/ckstack, v0 drafted from chalach's memories).",
+    "enforced_by": "~/PhD_local/ckstack",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "post-review-off",
+    "date": "2026-11-05",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "No mandatory post-run Claude review after cursor and agy auto runs (post_review.enabled false); the rule check still runs.",
+    "enforced_by": "config/workspaces.json post_review.enabled, runner (call-site gating)",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  },
+  {
+    "id": "build-now",
+    "date": "2026-11-05",
+    "words": "REDACTED: historical user wording omitted from the portable kit.",
+    "rule": "Build all of v4 in one go, not only phase 0.",
+    "enforced_by": "none (a build decision)",
+    "source": "Portable policy snapshot; see rule and enforced_by."
+  }
+]
