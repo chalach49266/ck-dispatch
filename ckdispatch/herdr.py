@@ -280,6 +280,10 @@ def open_window(run_id, cwd, script, main, runs_dir, run_dir, agent=None, title=
                 out.update(ok=True, window_id=home[1] if home else None, herdr_terminal=address,
                            how="Herdr beside main" if home else "Herdr new CK tab", tab=bool(home))
                 save(run_dir, {"host": "herdr:" + main, "terminal": address, "window": out})
+                try:  # spinner from the start: Cursor/Grok never report their own status (chalach 2026-11-15)
+                    invoke([hc_path(), "label", "--json", address, "ck.state=working"], log)
+                except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+                    log.write(f"ck-run: Herdr working label failed: {exc}\n")
                 if home:
                     try:
                         if not arrange_beside(home[1], main, address, log):

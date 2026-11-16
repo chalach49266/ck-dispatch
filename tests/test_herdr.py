@@ -218,7 +218,7 @@ class HerdrTests(unittest.TestCase):
         self.assertEqual(self.state()["terminals"][0]["labels"]["ck.state"], "failed")
         # green right when the agent finished, then the final check turned it red
         labels = [c["argv"][-1] for c in self.calls("label")]
-        self.assertEqual(labels[0], "ck.state=done")
+        self.assertEqual(labels[:2], ["ck.state=working", "ck.state=done"])
         self.assertEqual(labels[-1], "ck.state=failed")
 
     def test_watchdog_approval_stall_yellow_other_stall_red(self):
