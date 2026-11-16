@@ -256,12 +256,23 @@ class HerdrTests(unittest.TestCase):
             herdr.close_later("t1", 300, run_dir=str(self.rd))
         argv = popen.call_args.args[0]
         self.assertEqual(argv[-3:], ["t1", "300", str(self.rd)])
-        # unchanged screen -> closed; changed screen -> kept
-        for screens, expect in ((["same", "same"], True), (["before", "after"], False)):
-            with mock.patch.object(herdr, "read", side_effect=screens), \
+        # idle at the end -> closed; working again, waiting, or more turns -> kept
+        g = {"ck.state": "done"}
+        cases = (({"turn": 1}, {"turn": 1, "status": {"state": "idle"}, "labels": g}, True),
+                 ({"turn": 0}, {"turn": 0, "status": None, "labels": g}, True),
+                 ({"turn": 1}, {"turn": 1, "status": {"state": "idle"}, "labels": {"ck.state": "needs"}}, False),
+                 ({"turn": 1}, {"turn": 1, "status": {"state": "idle"}, "labels": {"ck.state": "failed"}}, False),
+                 ({"turn": 1}, {"turn": 1, "status": {"state": "working"}, "labels": g}, False),
+                 ({"turn": 1}, {"turn": 1, "status": "blocked", "labels": g}, False),
+                 ({"turn": 1}, {"turn": 2, "status": {"state": "idle"}, "labels": g}, False))
+        for first, last, expect in cases:
+            with mock.patch.object(herdr, "_get", side_effect=[first, last]), \
                  mock.patch.object(herdr, "close_pane") as cp, mock.patch.object(herdr.time, "sleep"):
-                herdr._closer_main(["t1", "0.02", ""])
-            self.assertEqual(cp.called, expect, screens)
+                herdr._closer_main(["t1", "0.01", ""])
+            self.assertEqual(cp.called, expect, (first, last))
+        with mock.patch.object(herdr, "_get", return_value=None), mock.patch.object(herdr, "close_pane") as cp:
+            herdr._closer_main(["t1", "0.01", ""])
+        cp.assert_not_called()
         # a pane without the ck-run label is never touched
         get = mock.Mock(returncode=0, stdout='{"labels": {"x": "y"}}')
         with mock.patch.object(herdr, "_hc", return_value=get) as hc:

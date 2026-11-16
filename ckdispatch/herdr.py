@@ -353,10 +353,11 @@ _CLOSER = ("import sys; sys.path.insert(0, sys.argv[1]); from ckdispatch import 
 
 
 def close_later(terminal, delay_s, run_dir=None):
-    """Close a cleanly finished run's Herdr pane after delay_s in a small detached process (the iTerm rule of
-    live.close_tab_later): only that terminal, and only if its screen did not change in the second half of
-    delay_s (a pane chalach is using stays). The other agent panes of the same main then get equal heights
-    again. delay_s <= 0 = never. Returns the Popen or None."""
+    """Close a finished run's Herdr pane delay_s after the agent finished, in a small detached process.
+    Only a green pane (label ck.state=done) closes; yellow and red stay open. Kept when the agent is busy again at that time (chalach typed a follow-up: status working or blocked,
+    or more turns than at finish). The other agent panes of the same main then get equal heights again.
+    delay_s <= 0 = never. Returns the Popen or None. (The iTerm rule "screen unchanged in the second half"
+    kept almost every Herdr pane: Claude Code prints a recap after a few idle minutes; chalach 2026-11-15.)"""
     try:
         delay_s = float(delay_s)
     except (TypeError, ValueError):
@@ -371,25 +372,38 @@ def close_later(terminal, delay_s, run_dir=None):
         return None
 
 
+def _busy(info):
+    st = info.get("status")
+    raw = st if isinstance(st, str) else (st or {}).get("state")
+    return raw in ("working", "blocked")
+
+
+def _get(terminal, log=None):
+    proc = _hc(["get", "--json", terminal], log)
+    try:
+        return json.loads(proc.stdout) if proc and proc.returncode == 0 else None
+    except ValueError:
+        return None
+
+
 def _closer_main(args):
-    from . import live
     terminal, delay_s, run_dir = args[0], float(args[1]), (args[2] or None)
-
-    def wait(seconds):
-        end = time.monotonic() + seconds
-        while time.monotonic() < end:
-            time.sleep(max(0.01, min(2.0, end - time.monotonic())))
-            if run_dir and not os.path.isdir(run_dir):
-                return False
-        return True
-
-    if not wait(delay_s / 2):
+    first = _get(terminal)
+    if first is None:
         return 0
-    base = live.text_signature(read(terminal))
-    if base is None or not wait(delay_s / 2):
-        return 0  # the pane is gone already, or the run folder was removed
-    if live.text_signature(read(terminal)) != base:
-        return 0  # somebody used the pane: keep it
+    turn0 = first.get("turn") or 0
+    end = time.monotonic() + delay_s
+    while time.monotonic() < end:
+        time.sleep(max(0.01, min(2.0, end - time.monotonic())))
+        if run_dir and not os.path.isdir(run_dir):
+            return 0  # the run folder was removed (test sandbox)
+    info = _get(terminal)
+    if info is None or info.get("state") == "finished" and not info.get("labels"):
+        return 0  # gone already
+    if _busy(info) or (info.get("turn") or 0) > turn0:
+        return 0  # chalach is using it: keep
+    if (info.get("labels") or {}).get("ck.state") != "done":
+        return 0  # yellow (needs you) or red (failed) stays open until chalach closes it (chalach 2026-11-15)
     if run_dir:
         with (Path(run_dir) / "herdr.log").open("a") as log:
             close_pane(terminal, log)
